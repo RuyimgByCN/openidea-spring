@@ -1,0 +1,10 @@
+/dist/
+/web/
+/agent/
+/agent-src/build/
+/target/
+/web-src/node_modules/
+/web-src/.vite/
+*.oiplugin
+*.key
+.DS_Store

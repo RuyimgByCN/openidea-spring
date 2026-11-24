@@ -1,0 +1,30 @@
+{
+  "Spring Boot Basic Properties": {
+    "prefix": ["sboot"],
+    "body": [
+      "server.port=${1:8080}",
+      "spring.application.name=${2:demo-service}",
+      "spring.profiles.active=${3:dev}$0"
+    ],
+    "description": "Basic Spring Boot application properties"
+  },
+  "Spring Boot Datasource & JPA": {
+    "prefix": ["sdatasource", "sjpa"],
+    "body": [
+      "spring.datasource.url=${1:jdbc:postgresql://localhost:5432/app}",
+      "spring.datasource.username=${2:postgres}",
+      "spring.datasource.password=${3:\\${DB_PASSWORD:}}",
+      "spring.jpa.hibernate.ddl-auto=${4:validate}",
+      "spring.jpa.open-in-view=false$0"
+    ],
+    "description": "Spring Boot datasource and JPA properties"
+  },
+  "Spring Boot Actuator Exposure": {
+    "prefix": ["sactuator"],
+    "body": [
+      "management.endpoints.web.exposure.include=${1:health,info,metrics,beans,mappings,env,loggers}",
+      "management.endpoint.health.show-details=${2:when_authorized}$0"
+    ],
+    "description": "Spring Boot Actuator web exposure properties"
+  }
+}

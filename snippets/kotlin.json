@@ -1,0 +1,47 @@
+{
+  "Spring RestController (Kotlin)": {
+    "prefix": ["restctrl", "sctrl"],
+    "body": [
+      "@RestController",
+      "@RequestMapping(\"${1:/api/v1/items}\")",
+      "class ${2:ItemController} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Spring @RestController class in Kotlin"
+  },
+  "Spring GetMapping (Kotlin)": {
+    "prefix": ["getmap", "sget"],
+    "body": [
+      "@GetMapping(\"${1:/{id}}\")",
+      "fun ${2:getById}(@PathVariable ${3:id}: ${4:Long}): ${5:ResponseEntity<Any>} {",
+      "\t$0",
+      "\treturn ResponseEntity.ok().build()",
+      "}"
+    ],
+    "description": "Spring MVC @GetMapping Kotlin endpoint"
+  },
+  "Spring WebFlux CoRouter (Kotlin)": {
+    "prefix": ["corouter", "sroute"],
+    "body": [
+      "@Bean",
+      "fun ${1:routes}(${2:handler}: ${3:ItemHandler}) = router {",
+      "\t\"${4:/api/v1}\".nest {",
+      "\t\tGET(\"${5:/items}\", ${2:handler}::${6:list})",
+      "\t}",
+      "}$0"
+    ],
+    "description": "Spring WebFlux Kotlin router DSL bean"
+  },
+  "Spring ConfigurationProperties (Kotlin)": {
+    "prefix": ["sprops"],
+    "body": [
+      "@ConfigurationProperties(prefix = \"${1:app.feature}\")",
+      "data class ${2:FeatureProperties}(",
+      "\tval enabled: Boolean = true,",
+      "\tval ${3:endpoint}: String = \"${4:}\"",
+      ")$0"
+    ],
+    "description": "Spring Boot @ConfigurationProperties data class"
+  }
+}

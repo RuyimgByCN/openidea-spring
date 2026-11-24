@@ -1,0 +1,96 @@
+{
+  "properties": {
+    "language": {
+      "type": "string",
+      "title": "Display language",
+      "description": "UI language for the Spring panel. Use auto to follow OpenIDEA's UI language.",
+      "enum": ["auto", "en", "zh-CN"],
+      "default": "auto",
+      "group": "General"
+    },
+    "defaultProfile": {
+      "type": "string",
+      "title": "Default active Spring profile",
+      "description": "Default Spring profile name used when evaluating effective configuration (leave empty for default).",
+      "default": "",
+      "group": "Configuration & Profiles"
+    },
+    "inlayHintsEnabled": {
+      "type": "boolean",
+      "title": "Enable Spring inlay hints",
+      "description": "Master switch for inline Spring annotations, bean wiring, endpoint, and cron hints.",
+      "default": true,
+      "group": "Editor Assistance"
+    },
+    "showValueInlayHints": {
+      "type": "boolean",
+      "title": "Show @Value resolved hints",
+      "description": "Display resolved effective configuration values inline next to @Value expressions.",
+      "default": true,
+      "group": "Editor Assistance"
+    },
+    "showBeanInlayHints": {
+      "type": "boolean",
+      "title": "Show Bean wiring hints",
+      "description": "Display target Bean implementations inline next to injection fields and parameters.",
+      "default": true,
+      "group": "Editor Assistance"
+    },
+    "showEndpointInlayHints": {
+      "type": "boolean",
+      "title": "Show full route inlay hints",
+      "description": "Display full resolved HTTP paths (including class prefix and context-path) on endpoint methods.",
+      "default": true,
+      "group": "Editor Assistance"
+    },
+    "showCronInlayHints": {
+      "type": "boolean",
+      "title": "Show @Scheduled cron hints",
+      "description": "Display human-readable schedule descriptions next to 6-field Spring cron expressions.",
+      "default": true,
+      "group": "Editor Assistance"
+    },
+    "diagnosticsEnabled": {
+      "type": "boolean",
+      "title": "Enable Spring inspections",
+      "description": "Report live Spring Core, Boot Config, Web, Data JPA, SpEL, and Cron diagnostics while editing.",
+      "default": true,
+      "group": "Inspections"
+    },
+    "warnFieldInjection": {
+      "type": "boolean",
+      "title": "Warn on @Autowired field injection",
+      "description": "Highlight field injection with a quick fix to convert to constructor injection.",
+      "default": true,
+      "group": "Inspections"
+    },
+    "warnUnknownProperties": {
+      "type": "boolean",
+      "title": "Warn on unknown Spring Boot properties",
+      "description": "Report unrecognized keys in application.yml/.properties outside @ConfigurationProperties or metadata.",
+      "default": true,
+      "group": "Inspections"
+    },
+    "consoleHighlighting": {
+      "type": "boolean",
+      "title": "Highlight Spring Boot run console",
+      "description": "Apply ANSI-free Spring Boot log level, Hikari, Tomcat, Hibernate, and startup highlights in Run & Debug consoles.",
+      "default": true,
+      "group": "Runtime & Actuator"
+    },
+    "actuatorUrls": {
+      "type": "string",
+      "title": "Actuator endpoints",
+      "description": "Comma-separated Spring Boot Actuator base URLs to poll when inspecting runtime applications.",
+      "default": "http://localhost:8080/actuator",
+      "group": "Runtime & Actuator"
+    },
+    "agentPortRange": {
+      "type": "string",
+      "title": "Runtime agent probe port range",
+      "description": "Loopback TCP port range scanned for the optional OpenIDEA Spring runtime agent.",
+      "default": "47391-47398",
+      "group": "Runtime & Actuator"
+    }
+  }
+}

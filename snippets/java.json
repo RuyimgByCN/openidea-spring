@@ -1,0 +1,136 @@
+{
+  "Spring RestController": {
+    "prefix": ["restctrl", "sctrl"],
+    "body": [
+      "@RestController",
+      "@RequestMapping(\"${1:/api/v1/items}\")",
+      "public class ${2:ItemController} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Spring @RestController class"
+  },
+  "Spring GetMapping": {
+    "prefix": ["getmap", "sget"],
+    "body": [
+      "@GetMapping(\"${1:/{id}}\")",
+      "public ${2:ResponseEntity<Object>} ${3:getById}(@PathVariable ${4:Long} ${5:id}) {",
+      "\t$0",
+      "\treturn ResponseEntity.ok().build();",
+      "}"
+    ],
+    "description": "Spring MVC @GetMapping endpoint method"
+  },
+  "Spring PostMapping": {
+    "prefix": ["postmap", "spost"],
+    "body": [
+      "@PostMapping(\"${1:}\")",
+      "public ${2:ResponseEntity<Object>} ${3:create}(@Valid @RequestBody ${4:CreateRequest} ${5:request}) {",
+      "\t$0",
+      "\treturn ResponseEntity.ok().build();",
+      "}"
+    ],
+    "description": "Spring MVC @PostMapping endpoint method"
+  },
+  "Spring PutMapping": {
+    "prefix": ["putmap", "sput"],
+    "body": [
+      "@PutMapping(\"${1:/{id}}\")",
+      "public ${2:ResponseEntity<Object>} ${3:update}(@PathVariable ${4:Long} ${5:id}, @Valid @RequestBody ${6:UpdateRequest} ${7:request}) {",
+      "\t$0",
+      "\treturn ResponseEntity.ok().build();",
+      "}"
+    ],
+    "description": "Spring MVC @PutMapping endpoint method"
+  },
+  "Spring DeleteMapping": {
+    "prefix": ["delmap", "sdel"],
+    "body": [
+      "@DeleteMapping(\"${1:/{id}}\")",
+      "public ResponseEntity<Void> ${2:delete}(@PathVariable ${3:Long} ${4:id}) {",
+      "\t$0",
+      "\treturn ResponseEntity.noContent().build();",
+      "}"
+    ],
+    "description": "Spring MVC @DeleteMapping endpoint method"
+  },
+  "Spring Bean Method": {
+    "prefix": ["sbean"],
+    "body": [
+      "@Bean",
+      "public ${1:MyService} ${2:myService}() {",
+      "\treturn new ${1:MyService}($0);",
+      "}"
+    ],
+    "description": "Spring @Bean factory method inside @Configuration"
+  },
+  "Spring Value Field": {
+    "prefix": ["sval"],
+    "body": [
+      "@Value(\"\\${${1:app.property}:${2:default}}\")",
+      "private ${3:String} ${4:propertyValue};$0"
+    ],
+    "description": "Inject configuration property via @Value"
+  },
+  "Spring Scheduled Cron": {
+    "prefix": ["scron"],
+    "body": [
+      "@Scheduled(cron = \"${1:0 */5 * * * *}\")",
+      "public void ${2:scheduledTask}() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Spring @Scheduled method with 6-field cron expression"
+  },
+  "Spring EventListener": {
+    "prefix": ["sevent"],
+    "body": [
+      "@EventListener",
+      "public void ${1:onEvent}(${2:ApplicationReadyEvent} ${3:event}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Spring @EventListener handler method"
+  },
+  "Spring Transactional Method": {
+    "prefix": ["stx"],
+    "body": [
+      "@Transactional(rollbackFor = Exception.class)",
+      "public ${1:void} ${2:execute}(${3:}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Spring @Transactional method with rollbackFor = Exception.class"
+  },
+  "Spring Data JPA @Query": {
+    "prefix": ["squery"],
+    "body": [
+      "@Query(\"SELECT e FROM ${1:Entity} e WHERE e.${2:field} = :${3:value}\")",
+      "${4:List<${1:Entity}>} ${5:findByField}(@Param(\"${3:value}\") ${6:String} ${3:value});$0"
+    ],
+    "description": "Spring Data JPA @Query repository method"
+  },
+  "Spring WebFlux Router": {
+    "prefix": ["sroute"],
+    "body": [
+      "@Bean",
+      "public RouterFunction<ServerResponse> ${1:routes}(${2:Handler} ${3:handler}) {",
+      "\treturn RouterFunctions.route()",
+      "\t\t.GET(\"${4:/api/items}\", ${3:handler}::${5:list})",
+      "\t\t.build();",
+      "}$0"
+    ],
+    "description": "Spring WebFlux functional RouterFunction bean"
+  },
+  "Spring HttpExchange Client": {
+    "prefix": ["sexchange"],
+    "body": [
+      "@HttpExchange(\"${1:/api/v1}\")",
+      "public interface ${2:RemoteApiClient} {",
+      "\t@GetExchange(\"${3:/items/{id}}\")",
+      "\t${4:Object} ${5:getItem}(@PathVariable ${6:Long} ${7:id});$0",
+      "}"
+    ],
+    "description": "Spring Framework 6 declarative @HttpExchange client interface"
+  }
+}

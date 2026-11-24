@@ -1,0 +1,17 @@
+package $PACKAGE$;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+@ConfigurationProperties(prefix = "$PREFIX$")
+public class $NAME$ {
+    private boolean enabled = true;
+    $END$
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+}

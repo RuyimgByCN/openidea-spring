@@ -1,0 +1,57 @@
+{
+  "Spring Boot Server & Application": {
+    "prefix": ["sboot", "sserver"],
+    "body": [
+      "server:",
+      "  port: ${1:8080}",
+      "spring:",
+      "  application:",
+      "    name: ${2:demo-service}",
+      "  profiles:",
+      "    active: ${3:dev}$0"
+    ],
+    "description": "Basic server.port, spring.application.name, and active profile YAML block"
+  },
+  "Spring Boot Datasource & JPA": {
+    "prefix": ["sdatasource", "sjpa"],
+    "body": [
+      "spring:",
+      "  datasource:",
+      "    url: ${1:jdbc:postgresql://localhost:5432/app}",
+      "    username: ${2:postgres}",
+      "    password: ${3:\\${DB_PASSWORD:}}",
+      "  jpa:",
+      "    hibernate:",
+      "      ddl-auto: ${4:validate}",
+      "    show-sql: ${5:false}",
+      "    open-in-view: false$0"
+    ],
+    "description": "Spring Boot datasource and JPA configuration block"
+  },
+  "Spring Boot Actuator Exposure": {
+    "prefix": ["sactuator"],
+    "body": [
+      "management:",
+      "  endpoints:",
+      "    web:",
+      "      exposure:",
+      "        include: ${1:health,info,metrics,beans,mappings,env,loggers}",
+      "  endpoint:",
+      "    health:",
+      "      show-details: ${2:when_authorized}$0"
+    ],
+    "description": "Expose Spring Boot Actuator endpoints in YAML"
+  },
+  "Spring Multi-Document Profile": {
+    "prefix": ["sprofile"],
+    "body": [
+      "---",
+      "spring:",
+      "  config:",
+      "    activate:",
+      "      on-profile: ${1:dev}",
+      "$0"
+    ],
+    "description": "Multi-document YAML profile activation block"
+  }
+}

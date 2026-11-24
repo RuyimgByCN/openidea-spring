@@ -1,0 +1,471 @@
+id = "ruyimg.spring"
+name = "Spring & Spring Boot"
+version = "0.1.0"
+description = "IntelliJ IDEA-aligned Spring & Spring Boot developer suite for OpenIDEA (zero duplication of built-in IDE Spring features): Bean DI index & interactive Dependency Graph, Core/Web/Data/Config/SpEL/Cron inspections & quick fixes, Constructor Injection refactoring, Spring Boot Config completion/hover/profile diff/YAML↔Properties converter, WebFlux & @HttpExchange endpoints, Spring Data JPA derived query engine & @Query SQL injection, 6-field Cron explainer, Services tool window, Actuator monitor, optional pure-Java Runtime Probe Agent, Console log highlighting, Datasource sync, and Spring templates."
+authors = ["ruyimg"]
+homepage = "https://github.com/RuyimgByCN/openidea-spring"
+license = "Apache-2.0"
+change-notes = "0.1.0 — Initial release: (1) Spring Core Bean DI cross-file index, gutter markers, Find Usages/Rename for Qualifiers/Events/Properties, interactive SVG Bean Dependency Graph, and Core inspections (missing/ambiguous/circular beans, field injection + Constructor Injection quick fix, @Transactional/@Async checks); (2) Spring Boot Config 180+ curated properties + metadata JSON + @ConfigurationProperties completion/hover/diagnostics, Status Bar active profile switcher, Effective Config explorer, native Profile Diff, YAML↔Properties converter, Kotlin/@ConditionalOnProperty navigation, and Maven/Gradle starter detection; (3) Spring WebFlux & @HttpExchange EndpointsProvider, Unified Endpoints Explorer, @PathVariable & duplicate-route inspections, cURL & full-URL helpers; (4) Spring Data JPA derived query validation/completion/JPQL preview, @Query SQL language injection & param checks, SpEL validator, and 6-field Spring Cron explainer; (5) Optional pure-Java loopback Runtime Probe Agent, live Actuator & Loggers control, Services tool window detail tabs, Run console highlight rules, one-click Datasource sync, and Spring file/live templates."
+categories = ["frameworks", "tools"]
+icon = "icons/spring.svg"
+icon-dark = "icons/spring_dark.svg"
+engines.openidea = "^1.14"
+wasm = "dist/plugin.wasm"
+activation = [
+  "on-view:spring",
+  "on-view:spring-services",
+  "on-command:*",
+  "on-language:java",
+  "on-language:kotlin",
+  "on-language:yaml",
+  "on-language:properties",
+  "on-event:settings-changed",
+  "on-startup-finished",
+]
+
+[capabilities]
+required = [
+  "project.read",
+  "editor.read",
+  "editor.write",
+  "build.read",
+  "storage",
+  "events",
+  "clipboard",
+]
+optional = [
+  "net:127.0.0.1",
+  "net:localhost",
+  "net:ask",
+  "database.sources",
+]
+
+# Optional high-risk `java.agent` capability is derived automatically from this declaration.
+[[contributes.javaAgents]]
+path = "agent/openidea-spring-agent.jar"
+args = "ports=47391-47398"
+
+[[contributes.views]]
+id = "spring"
+title = "Spring"
+icon = "icons/spring.svg"
+location = "right"
+secondary = true
+web = "web/index.html"
+header = "none"
+
+[[contributes.views]]
+id = "spring-services"
+title = "Spring Boot"
+icon = "icons/spring_boot.svg"
+location = "services"
+
+[[contributes.searchCategories]]
+id = "spring-beans"
+title = "Spring Beans"
+
+[[contributes.searchCategories]]
+id = "spring-config"
+title = "Spring Config"
+
+[[contributes.statusBar]]
+id = "spring-profile"
+text = "Spring"
+tooltip = "Spring Active Profile & Tools"
+command = "switch-profile"
+align = "right"
+priority = 95
+
+[contributes.settings]
+title = "Spring & Spring Boot"
+schema = "settings.schema.json"
+
+[[contributes.documentIndexers]]
+extensions = ["java", "kt", "xml", "yml", "yaml", "properties"]
+
+# Emits ONLY WebFlux functional routes & Spring 6 @HttpExchange HTTP interfaces
+# so OpenIDEA's built-in Spring MVC route index is never duplicated.
+[[contributes.endpoints]]
+files = ["**/*.java", "**/*.kt"]
+
+[[contributes.providers]]
+kinds = [
+  "completion",
+  "definition",
+  "line-markers",
+  "code-actions",
+  "hover",
+  "inlay-hints",
+  "diagnostics",
+  "implementation",
+  "gutter-actions",
+  "injections",
+  "document-links",
+]
+languages = ["java", "kotlin"]
+
+[[contributes.providers]]
+kinds = [
+  "completion",
+  "definition",
+  "line-markers",
+  "code-actions",
+  "hover",
+  "inlay-hints",
+  "diagnostics",
+  "document-links",
+]
+languages = ["yaml", "properties"]
+
+[[contributes.providers]]
+kinds = ["completion", "definition", "line-markers", "hover", "diagnostics", "document-links"]
+languages = ["xml"]
+
+[[contributes.markerIcons]]
+id = "bean-inject"
+icon = "icons/marker_bean.svg"
+iconDark = "icons/marker_bean_dark.svg"
+markers = ["bean-inject#"]
+tooltip = "Navigate to Spring Bean injection points"
+
+[[contributes.markerIcons]]
+id = "bean-def"
+icon = "icons/marker_inject.svg"
+iconDark = "icons/marker_inject_dark.svg"
+markers = ["bean-def#"]
+tooltip = "Navigate to Spring Bean definition"
+
+[[contributes.markerIcons]]
+id = "event-pub"
+icon = "icons/marker_event.svg"
+iconDark = "icons/marker_event_dark.svg"
+markers = ["event-pub#"]
+tooltip = "Navigate to Spring Event publishers"
+
+[[contributes.markerIcons]]
+id = "event-listener"
+icon = "icons/marker_event.svg"
+iconDark = "icons/marker_event_dark.svg"
+markers = ["event-listener#"]
+tooltip = "Navigate to Spring Event listeners"
+
+[[contributes.markerIcons]]
+id = "config-prop"
+icon = "icons/marker_config.svg"
+iconDark = "icons/marker_config_dark.svg"
+markers = ["prop#"]
+tooltip = "Navigate to Spring property declarations"
+
+[[contributes.markerIcons]]
+id = "endpoint"
+icon = "icons/marker_endpoint.svg"
+iconDark = "icons/marker_endpoint_dark.svg"
+
+[[contributes.markerIcons]]
+id = "scheduled"
+icon = "icons/marker_scheduled.svg"
+iconDark = "icons/marker_scheduled_dark.svg"
+
+[[contributes.markerIcons]]
+id = "data"
+icon = "icons/marker_data.svg"
+iconDark = "icons/marker_data_dark.svg"
+
+# --- Commands ---
+
+[[contributes.commands]]
+id = "open"
+title = "Spring: Open Panel"
+category = "Spring"
+
+[[contributes.commands]]
+id = "open-beans"
+title = "Spring: Open Beans & Dependency Graph"
+category = "Spring"
+
+[[contributes.commands]]
+id = "open-endpoints"
+title = "Spring: Open Endpoints Explorer"
+category = "Spring"
+
+[[contributes.commands]]
+id = "open-config"
+title = "Spring: Open Boot Configuration & Profiles"
+category = "Spring"
+
+[[contributes.commands]]
+id = "open-data"
+title = "Spring: Open Data, SpEL & Cron"
+category = "Spring"
+
+[[contributes.commands]]
+id = "open-runtime"
+title = "Spring: Open Runtime & Actuator"
+category = "Spring"
+
+[[contributes.commands]]
+id = "refresh-index"
+title = "Spring: Refresh Project Index"
+category = "Spring"
+
+[[contributes.commands]]
+id = "switch-profile"
+title = "Spring: Switch Active Profile"
+category = "Spring › Config"
+
+[[contributes.commands]]
+id = "compare-profiles"
+title = "Spring: Compare Two Profiles (Diff)"
+category = "Spring › Config"
+
+[[contributes.commands]]
+id = "convert-yaml-properties"
+title = "Spring: Convert Current File YAML ↔ Properties"
+category = "Spring › Config"
+when = "editorLang == yaml || editorLang == properties"
+
+[[contributes.commands]]
+id = "convert-field-to-constructor"
+title = "Spring: Convert Field Injection to Constructor Injection"
+category = "Spring › Refactor"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.commands]]
+id = "inspect-bean-at-caret"
+title = "Spring: Inspect Bean Dependency Graph at Caret"
+category = "Spring › Beans"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.commands]]
+id = "navigate-bean-candidates"
+title = "Spring: Navigate to Bean Candidates / Injections"
+category = "Spring › Beans"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.commands]]
+id = "copy-endpoint-curl"
+title = "Spring: Copy Endpoint as cURL"
+category = "Spring › Web"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.commands]]
+id = "copy-endpoint-url"
+title = "Spring: Copy Resolved Endpoint URL"
+category = "Spring › Web"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.commands]]
+id = "explain-cron"
+title = "Spring: Explain Cron Expression at Caret"
+category = "Spring › Tools"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.commands]]
+id = "sync-datasource"
+title = "Spring: Sync Datasource to Database Tool Window"
+category = "Spring › Data"
+
+[[contributes.commands]]
+id = "connect-actuator"
+title = "Spring: Connect Actuator Endpoint"
+category = "Spring › Runtime"
+
+[[contributes.commands]]
+id = "refresh-runtime"
+title = "Spring: Refresh Runtime Instances"
+category = "Spring › Runtime"
+
+[[contributes.commands]]
+id = "open-runtime-browser"
+title = "Spring: Open Application URL in Browser"
+category = "Spring › Runtime"
+
+[[contributes.commands]]
+id = "toggle-console-highlight"
+title = "Spring: Toggle Spring Boot Console Highlighting"
+category = "Spring › Runtime"
+
+# --- Menus ---
+
+[[contributes.menus]]
+menu = "tools"
+command = "open"
+
+[[contributes.menus]]
+menu = "tools"
+command = "switch-profile"
+
+[[contributes.menus]]
+menu = "tools"
+command = "compare-profiles"
+
+[[contributes.menus]]
+menu = "tools"
+command = "sync-datasource"
+
+[[contributes.menus]]
+menu = "tools"
+command = "connect-actuator"
+
+[[contributes.menus]]
+menu = "tools"
+command = "refresh-index"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "inspect-bean-at-caret"
+submenu = "Spring"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "navigate-bean-candidates"
+submenu = "Spring"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "convert-field-to-constructor"
+submenu = "Spring"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "copy-endpoint-url"
+submenu = "Spring"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "copy-endpoint-curl"
+submenu = "Spring"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "explain-cron"
+submenu = "Spring"
+when = "editorLang == java || editorLang == kotlin"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "convert-yaml-properties"
+submenu = "Spring"
+when = "editorLang == yaml || editorLang == properties"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "compare-profiles"
+submenu = "Spring"
+when = "editorLang == yaml || editorLang == properties"
+
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "spring-services"
+command = "refresh-runtime"
+
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "spring-services"
+command = "open-runtime-browser"
+when = "viewItemKind == app"
+
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "spring-services"
+command = "open-runtime"
+when = "viewItemKind == app"
+
+# --- Keymaps ---
+
+[[contributes.keymaps]]
+command = "open"
+key = "Alt+Shift+S"
+mac = "Meta+Shift+S"
+
+[[contributes.keymaps]]
+command = "switch-profile"
+key = "Alt+Shift+P"
+mac = "Meta+Shift+P"
+
+# --- Snippets (Live Templates) ---
+
+[[contributes.snippets]]
+language = "java"
+path = "snippets/java.json"
+
+[[contributes.snippets]]
+language = "kotlin"
+path = "snippets/kotlin.json"
+
+[[contributes.snippets]]
+language = "yaml"
+path = "snippets/yaml.json"
+
+[[contributes.snippets]]
+language = "properties"
+path = "snippets/properties.json"
+
+# --- File Templates ---
+
+[[contributes.fileTemplates]]
+id = "spring-rest-controller"
+name = "Spring RestController"
+extension = "java"
+path = "templates/SpringRestController.java.txt"
+variables = [{ name = "BASE_PATH", prompt = "Base request path (e.g. /api/v1/items)" }]
+
+[[contributes.fileTemplates]]
+id = "spring-service"
+name = "Spring Service"
+extension = "java"
+path = "templates/SpringService.java.txt"
+
+[[contributes.fileTemplates]]
+id = "spring-repository"
+name = "Spring Data JPA Repository"
+extension = "java"
+path = "templates/SpringRepository.java.txt"
+variables = [
+  { name = "ENTITY", prompt = "Entity class name" },
+  { name = "ID_TYPE", prompt = "ID type (e.g. Long, String, UUID)" },
+]
+
+[[contributes.fileTemplates]]
+id = "spring-configuration"
+name = "Spring @Configuration Class"
+extension = "java"
+path = "templates/SpringConfiguration.java.txt"
+
+[[contributes.fileTemplates]]
+id = "spring-configuration-properties"
+name = "Spring @ConfigurationProperties"
+extension = "java"
+path = "templates/SpringConfigurationProperties.java.txt"
+variables = [{ name = "PREFIX", prompt = "Property prefix (e.g. app.mail)" }]
+
+[[contributes.fileTemplates]]
+id = "spring-component"
+name = "Spring Component"
+extension = "java"
+path = "templates/SpringComponent.java.txt"
+
+[[contributes.fileTemplates]]
+id = "spring-entity"
+name = "Spring JPA Entity"
+extension = "java"
+path = "templates/SpringEntity.java.txt"
+variables = [{ name = "TABLE_NAME", prompt = "Database table name" }]
+
+[[contributes.fileTemplates]]
+id = "spring-boot-test"
+name = "Spring Boot Test"
+extension = "java"
+path = "templates/SpringBootTest.java.txt"
+
+[[contributes.fileTemplates]]
+id = "spring-application-profile"
+name = "Spring Application Profile YAML"
+extension = "yml"
+path = "templates/ApplicationProfile.yml.txt"
+variables = [{ name = "PORT", prompt = "Server port (e.g. 8080)" }]
