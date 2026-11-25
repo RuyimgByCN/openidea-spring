@@ -24,7 +24,7 @@ use crate::endpoints::{
 };
 use crate::hover_inlay::InlayPrefs;
 use crate::index::{
-    ProjectCache, build_document_index_edges, compute_bean_graph, detect_language_from_path,
+    BeanLookupIndex, ProjectCache, build_document_index_edges, detect_language_from_path,
     resolve_injection, scan_project, should_index_path,
 };
 use crate::model::{EndpointDef, SpringProjectModel};
@@ -60,7 +60,7 @@ use openidea_plugin::{
     host, register_plugin,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const STORAGE_PROFILES_KEY: &str = "spring.activeProfiles";
 const STORAGE_ACTUATOR_URLS_KEY: &str = "spring.customActuatorUrls";
@@ -207,10 +207,10 @@ impl SpringPlugin {
                 .cache
                 .projects
                 .get(&root)
-                .is_none_or(|m| m.files.is_empty());
+                .is_none_or(|m| !m.scanned);
         if needs_scan {
             let prof = self.active_profile_for_root(Some(&root));
-            scan_project(&mut self.cache, project, prof.as_deref(), show_task);
+            scan_project(&mut self.cache, project, prof.as_deref(), show_task, force);
         }
         root
     }
@@ -331,9 +331,8 @@ impl SpringPlugin {
             self.persist_profiles();
             let eff_prof = self.active_profile_for_root(Some(&r));
             if let Some(model) = self.cache.projects.get_mut(&r) {
-                let (edges, cycles) = compute_bean_graph(model, eff_prof.as_deref());
-                model.bean_edges = edges;
-                model.cycles = cycles;
+                model.graph_dirty = true;
+                model.ensure_bean_graph(eff_prof.as_deref());
             }
             self.update_status_bar(Some(&r));
         }
@@ -358,19 +357,21 @@ impl SpringPlugin {
         });
         self.pending_panel_action = Some(payload.clone());
         let _ = host::reveal_view("spring");
+        let cur = self.current_root();
+        let snapshot = self.build_snapshot_json(cur.as_deref());
         let _ = host::post_view_message(
             "spring",
             &json!({
                 "op": "open-tab",
                 "tab": tab,
                 "extra": extra,
-                "snapshot": self.build_snapshot_json(self.current_root().as_deref()),
+                "snapshot": snapshot,
             })
             .to_string(),
         );
     }
 
-    fn build_snapshot_json(&self, root: Option<&str>) -> Value {
+    fn build_snapshot_json(&mut self, root: Option<&str>) -> Value {
         let locale = effective_locale();
         let zh = is_zh_locale(&locale);
         let target_root = root
@@ -382,6 +383,10 @@ impl SpringPlugin {
         } else {
             self.active_profile_for_root(Some(&target_root))
         };
+
+        if let Some(model) = self.cache.projects.get_mut(&target_root) {
+            model.ensure_bean_graph(active_profile.as_deref());
+        }
 
         let Some(model) = self.cache.projects.get(&target_root) else {
             return json!({
@@ -419,27 +424,39 @@ impl SpringPlugin {
         }
 
         // Map owner -> outgoing injections for quick bean detail cards
-        let all_inj = model.all_injections();
+        let bean_idx = BeanLookupIndex::build(model, active_profile.as_deref());
+        let mut inj_by_owner: HashMap<&str, Vec<&crate::model::InjectionSite>> = HashMap::new();
+        for inj in model.files.values().flat_map(|f| f.injections.iter()) {
+            inj_by_owner.entry(inj.owner_bean.as_str()).or_default().push(inj);
+            if inj.owner_class != inj.owner_bean {
+                inj_by_owner.entry(inj.owner_class.as_str()).or_default().push(inj);
+            }
+        }
         let beans_json: Vec<Value> = model
             .all_beans()
             .into_iter()
             .map(|b| {
-                let deps: Vec<Value> = all_inj
-                    .iter()
-                    .filter(|inj| inj.owner_bean == b.name || inj.owner_class == b.class_name)
-                    .map(|inj| {
-                        let (status, targets) =
-                            resolve_injection(model, inj, active_profile.as_deref());
-                        json!({
-                            "field": inj.field_or_param_name,
-                            "targetType": inj.target_type,
-                            "kind": inj.kind,
-                            "status": status,
-                            "qualifier": inj.qualifier.as_ref().map(|(q, _)| q),
-                            "resolvedIds": targets.into_iter().map(|t| t.bean_id).collect::<Vec<_>>(),
-                        })
-                    })
-                    .collect();
+                let mut seen_injs = Vec::new();
+                let mut deps = Vec::new();
+                for owner_key in [b.name.as_str(), b.class_name.as_str()] {
+                    if let Some(list) = inj_by_owner.get(owner_key) {
+                        for &inj in list {
+                            if seen_injs.iter().any(|p| std::ptr::eq(*p, inj)) {
+                                continue;
+                            }
+                            seen_injs.push(inj);
+                            let (status, targets) = bean_idx.resolve(inj);
+                            deps.push(json!({
+                                "field": inj.field_or_param_name,
+                                "targetType": inj.target_type,
+                                "kind": inj.kind,
+                                "status": status,
+                                "qualifier": inj.qualifier.as_ref().map(|(q, _)| q),
+                                "resolvedIds": targets.into_iter().map(|t| t.bean_id).collect::<Vec<_>>(),
+                            }));
+                        }
+                    }
+                }
                 json!({
                     "id": b.id,
                     "name": b.name,
@@ -702,6 +719,47 @@ impl SpringPlugin {
         }
     }
 
+    fn project_root_for_path(&mut self, path: &str) -> String {
+        if let Some(cached_root) = self
+            .cache
+            .projects
+            .keys()
+            .filter(|r| path.starts_with(r.as_str()))
+            .max_by_key(|r| r.len())
+            .cloned()
+        {
+            return cached_root;
+        }
+        if let Some(p) = host::project_of(path)
+            && let Ok(root) = p.root()
+        {
+            self.last_project_root = Some(root.clone());
+            return root;
+        }
+        self.cache.resolve_root_for_doc(path)
+    }
+
+    fn doc_profile_without_scan(&mut self, path: &str) -> Option<String> {
+        let root = if let Some(cached_root) = self
+            .cache
+            .projects
+            .keys()
+            .filter(|r| path.starts_with(r.as_str()))
+            .max_by_key(|r| r.len())
+            .cloned()
+        {
+            Some(cached_root)
+        } else if let Some(p) = host::project_of(path)
+            && let Ok(root) = p.root()
+        {
+            self.last_project_root = Some(root.clone());
+            Some(root)
+        } else {
+            self.current_root()
+        };
+        self.active_profile_for_root(root.as_deref())
+    }
+
     fn doc_profile(&mut self, path: &str, language: &str, text: &str) -> Option<String> {
         if let Some(p) = host::project_of(path)
             && let Ok(root) = p.root()
@@ -711,10 +769,10 @@ impl SpringPlugin {
                 .cache
                 .projects
                 .get(&root)
-                .is_none_or(|m| m.files.is_empty())
+                .is_none_or(|m| !m.scanned)
             {
                 let prof = self.active_profile_for_root(Some(&root));
-                scan_project(&mut self.cache, &p, prof.as_deref(), false);
+                scan_project(&mut self.cache, &p, prof.as_deref(), false, false);
             }
             return self.active_profile_for_root(Some(&root));
         }
@@ -1352,13 +1410,11 @@ impl Plugin for SpringPlugin {
                         && let Ok(root) = project.root()
                         && let Ok(text) = project.read_file(path)
                     {
-                        let prof = self.active_profile_for_root(Some(&root));
-                        self.cache.update_file(
+                        self.cache.update_file_lazy(
                             &root,
                             path,
                             detect_language_from_path(path),
                             &text,
-                            prof.as_deref(),
                         );
                         self.last_project_root = Some(root);
                         model_dirty = true;
@@ -1368,25 +1424,31 @@ impl Plugin for SpringPlugin {
                     if let Some(project) = self.resolve_project(Some(ctx))
                         && let Ok(root) = project.root()
                     {
-                        let prof = self.active_profile_for_root(Some(&root));
-                        for path in batch.created.iter().chain(&batch.modified) {
-                            if should_index_path(path)
-                                && let Ok(text) = project.read_file(path)
-                            {
-                                self.cache.update_file(
-                                    &root,
-                                    path,
-                                    detect_language_from_path(path),
-                                    &text,
-                                    prof.as_deref(),
-                                );
-                                model_dirty = true;
+                        if batch.created.len() + batch.modified.len() > 200 {
+                            if let Some(model) = self.cache.projects.get_mut(&root) {
+                                model.scanned = false;
+                                model.graph_dirty = true;
                             }
-                        }
-                        for removed in &batch.removed {
-                            if should_index_path(removed) {
-                                self.cache.remove_file(&root, removed, prof.as_deref());
-                                model_dirty = true;
+                            model_dirty = true;
+                        } else {
+                            for path in batch.created.iter().chain(&batch.modified) {
+                                if should_index_path(path)
+                                    && let Ok(text) = project.read_file(path)
+                                {
+                                    self.cache.update_file_lazy(
+                                        &root,
+                                        path,
+                                        detect_language_from_path(path),
+                                        &text,
+                                    );
+                                    model_dirty = true;
+                                }
+                            }
+                            for removed in &batch.removed {
+                                if should_index_path(removed) {
+                                    self.cache.remove_file_lazy(&root, removed);
+                                    model_dirty = true;
+                                }
                             }
                         }
                     }
@@ -1721,8 +1783,8 @@ impl Details for SpringPlugin {
 
 impl DocumentIndexer for SpringPlugin {
     fn index(&mut self, doc: &IndexDoc) -> Edges {
-        let prof = self.doc_profile(&doc.path, detect_language_from_path(&doc.path), &doc.text);
-        build_document_index_edges(doc, &mut self.cache, prof.as_deref())
+        let root = self.project_root_for_path(&doc.path);
+        build_document_index_edges(doc, &root, &mut self.cache)
     }
 }
 
@@ -1846,14 +1908,14 @@ impl LanguageFeatures for SpringPlugin {
     }
 
     fn gutter_actions(&mut self, doc: &LangDoc) -> Vec<GutterAction> {
-        let prof = self.doc_profile(&doc.path, &doc.language, &doc.text);
+        let prof = self.doc_profile_without_scan(&doc.path);
         language_features::gutter_actions(&mut self.cache, doc, prof.as_deref())
     }
 }
 
 impl Injections for SpringPlugin {
     fn injections(&mut self, doc: &LangDoc) -> Vec<Injection> {
-        let prof = self.doc_profile(&doc.path, &doc.language, &doc.text);
+        let prof = self.doc_profile_without_scan(&doc.path);
         language_features::sql_injections(&mut self.cache, doc, prof.as_deref())
     }
 }
@@ -2207,5 +2269,24 @@ public interface RemoteClient {
         assert!(!invalid_yml_actions
             .iter()
             .any(|a| a.title == "Spring Boot: Convert YAML to .properties format"));
+    }
+
+    #[test]
+    fn document_indexer_does_not_trigger_full_project_scan() {
+        let mock = MockHost::install();
+        seed_project(&mock);
+        let mut plugin = SpringPlugin::default();
+
+        let idx_doc = IndexDoc {
+            path: "/project/src/main/java/com/example/demo/OrderService.java".into(),
+            text: sample_service_java().into(),
+            symbols: Vec::new(),
+        };
+        let edges = plugin.index(&idx_doc);
+        assert!(!edges.definitions.is_empty());
+
+        let model = plugin.cache.projects.get("/project").expect("project entry");
+        assert!(!model.scanned, "DocumentIndexer::index must not run scan_project");
+        assert_eq!(model.files.len(), 1);
     }
 }

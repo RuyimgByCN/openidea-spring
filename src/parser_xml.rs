@@ -12,6 +12,16 @@ pub fn parse_spring_xml(path: &str, text: &str) -> FileFacts {
         language: "xml".to_owned(),
         ..FileFacts::default()
     };
+    if !text.contains("<bean")
+        && !text.contains("<property")
+        && !text.contains("<constructor-arg")
+        && !text.contains("<prop")
+        && !text.contains("<import")
+        && !text.contains("property-placeholder")
+        && !text.contains("${")
+    {
+        return facts;
+    }
     let idx = LineIndex::new(text);
     let mut config_entries = Vec::new();
     let mut i = 0usize;

@@ -12,6 +12,19 @@ use openidea_plugin::{DependencyNode, Project, host};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const MAX_SCAN_FILES_PER_GLOB: u32 = 800;
+const MAX_TOTAL_SCAN_FILES: usize = 1500;
+const MAX_SCAN_FILE_BYTES: usize = 512 * 1024;
+const MAX_PARSE_BYTES: usize = 1024 * 1024;
+const AUTO_TASK_THRESHOLD: usize = 25;
+
+pub fn content_hash(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in text.as_bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
 
 #[derive(Default)]
 pub struct ProjectCache {
@@ -28,30 +41,52 @@ impl ProjectCache {
             })
     }
 
-    pub fn update_file(&mut self, root: &str, path: &str, language: &str, text: &str, active_profile: Option<&str>) {
+    pub fn insert_file_facts(&mut self, root: &str, path: &str, hash: u64, facts: FileFacts) {
+        let model = self.get_or_init(root);
+        model.files.insert(path.to_owned(), facts);
+        model.file_hashes.insert(path.to_owned(), hash);
+        model.graph_dirty = true;
+    }
+
+    pub fn update_file_lazy(&mut self, root: &str, path: &str, language: &str, text: &str) {
         if !should_index_path(path) {
             return;
         }
+        let hash = content_hash(text);
+        if let Some(model) = self.projects.get(root)
+            && model.file_hashes.get(path) == Some(&hash)
+            && model.files.contains_key(path)
+        {
+            return;
+        }
         let facts = parse_file(path, language, text);
-        let model = self.get_or_init(root);
-        model.files.insert(path.to_owned(), facts);
-        let (edges, cycles) = compute_bean_graph(model, active_profile);
-        model.bean_edges = edges;
-        model.cycles = cycles;
+        self.insert_file_facts(root, path, hash, facts);
     }
 
-    pub fn remove_file(&mut self, root: &str, path: &str, active_profile: Option<&str>) {
+    pub fn remove_file_lazy(&mut self, root: &str, path: &str) {
         if let Some(model) = self.projects.get_mut(root) {
             model.files.remove(path);
-            let (edges, cycles) = compute_bean_graph(model, active_profile);
-            model.bean_edges = edges;
-            model.cycles = cycles;
+            model.file_hashes.remove(path);
+            model.graph_dirty = true;
         }
     }
 
-    pub fn model_for_doc(&mut self, doc_path: &str, doc_lang: &str, doc_text: &str, active_profile: Option<&str>) -> &SpringProjectModel {
-        let root = self
-            .projects
+    pub fn update_file(&mut self, root: &str, path: &str, language: &str, text: &str, active_profile: Option<&str>) {
+        self.update_file_lazy(root, path, language, text);
+        if let Some(model) = self.projects.get_mut(root) {
+            model.ensure_bean_graph(active_profile);
+        }
+    }
+
+    pub fn remove_file(&mut self, root: &str, path: &str, active_profile: Option<&str>) {
+        self.remove_file_lazy(root, path);
+        if let Some(model) = self.projects.get_mut(root) {
+            model.ensure_bean_graph(active_profile);
+        }
+    }
+
+    pub fn resolve_root_for_doc(&self, doc_path: &str) -> String {
+        self.projects
             .keys()
             .filter(|r| doc_path.starts_with(r.as_str()))
             .max_by_key(|r| r.len())
@@ -61,8 +96,28 @@ impl ProjectCache {
                     .rsplit_once('/')
                     .map(|(dir, _)| dir.to_owned())
                     .unwrap_or_else(|| "/".to_owned())
-            });
-        self.update_file(&root, doc_path, doc_lang, doc_text, active_profile);
+            })
+    }
+
+    pub fn model_for_doc(&mut self, doc_path: &str, doc_lang: &str, doc_text: &str, _active_profile: Option<&str>) -> &SpringProjectModel {
+        let root = self.resolve_root_for_doc(doc_path);
+        self.update_file_lazy(&root, doc_path, doc_lang, doc_text);
+        self.projects.get(&root).expect("inserted above")
+    }
+
+    pub fn model_for_doc_with_graph(
+        &mut self,
+        doc_path: &str,
+        doc_lang: &str,
+        doc_text: &str,
+        active_profile: Option<&str>,
+    ) -> &SpringProjectModel {
+        let root = self.resolve_root_for_doc(doc_path);
+        self.update_file_lazy(&root, doc_path, doc_lang, doc_text);
+        let model = self.projects.get_mut(&root).expect("inserted above");
+        if model.files.get(doc_path).is_some_and(|f| !f.beans.is_empty()) {
+            model.ensure_bean_graph(active_profile);
+        }
         self.projects.get(&root).expect("inserted above")
     }
 }
@@ -96,6 +151,14 @@ pub fn parse_file(path: &str, language: &str, text: &str) -> FileFacts {
     } else {
         language
     };
+    if text.len() > MAX_PARSE_BYTES {
+        return FileFacts {
+            path: path.to_owned(),
+            language: lang.to_owned(),
+            is_kotlin: lang == "kotlin" || path.ends_with(".kt") || path.ends_with(".kts"),
+            ..FileFacts::default()
+        };
+    }
     if is_spring_config_path(path) || matches!(lang, "yaml" | "yml" | "properties") {
         let cf = parse_config_file(path, text);
         let mut facts = FileFacts {
@@ -134,19 +197,23 @@ pub fn parse_file(path: &str, language: &str, text: &str) -> FileFacts {
     }
 }
 
-pub fn scan_project(cache: &mut ProjectCache, project: &Project, active_profile: Option<&str>, show_task: bool) {
+pub fn scan_project(
+    cache: &mut ProjectCache,
+    project: &Project,
+    active_profile: Option<&str>,
+    show_task: bool,
+    force: bool,
+) {
     let Ok(root) = project.root() else {
         return;
     };
-    let task = if show_task {
+    let mut task = if show_task {
         Some(host::begin_task("Indexing Spring project…", true))
     } else {
         None
     };
 
     let globs = [
-        "**/*.java",
-        "**/*.kt",
         "**/application*.yml",
         "**/application*.yaml",
         "**/application*.properties",
@@ -156,10 +223,15 @@ pub fn scan_project(cache: &mut ProjectCache, project: &Project, active_profile:
         "**/*Context*.xml",
         "**/*context*.xml",
         "**/*beans*.xml",
+        "**/*.java",
+        "**/*.kt",
     ];
 
     let mut candidate_paths = BTreeSet::new();
     for g in globs {
+        if candidate_paths.len() >= MAX_TOTAL_SCAN_FILES {
+            break;
+        }
         if let Some(t) = &task
             && t.is_cancelled()
         {
@@ -169,40 +241,93 @@ pub fn scan_project(cache: &mut ProjectCache, project: &Project, active_profile:
             for p in found {
                 if !is_ignored_build_path(&p) {
                     candidate_paths.insert(p);
+                    if candidate_paths.len() >= MAX_TOTAL_SCAN_FILES {
+                        break;
+                    }
                 }
             }
         }
     }
 
+    let (mut existing_files, mut existing_hashes) = if !force {
+        cache
+            .projects
+            .get(&root)
+            .map(|m| (m.files.clone(), m.file_hashes.clone()))
+            .unwrap_or_default()
+    } else {
+        (BTreeMap::new(), HashMap::new())
+    };
+
+    let pending_count = candidate_paths
+        .iter()
+        .filter(|p| force || !existing_files.contains_key(p.as_str()))
+        .count();
+
+    if task.is_none() && pending_count > AUTO_TASK_THRESHOLD {
+        task = Some(host::begin_task("Indexing Spring project…", true));
+    }
+
     let total = candidate_paths.len() as u32;
     let mut new_files = BTreeMap::new();
+    let mut new_hashes = HashMap::new();
     for (idx_i, p) in candidate_paths.iter().enumerate() {
         if let Some(t) = &task {
-            if t.is_cancelled() {
+            if idx_i % 5 == 0 && t.is_cancelled() {
+                let model = cache.get_or_init(&root);
+                for (fp, facts) in new_files {
+                    model.files.insert(fp, facts);
+                }
+                for (hp, h) in new_hashes {
+                    model.file_hashes.insert(hp, h);
+                }
+                model.scanned = false;
+                model.graph_dirty = true;
                 return;
             }
-            if idx_i % 20 == 0 {
+            if idx_i % 10 == 0 {
                 t.report(idx_i as u32, Some(total), Some(p));
             }
         }
+        if !force
+            && let Some(cached_facts) = existing_files.remove(p)
+        {
+            if let Some(h) = existing_hashes.remove(p) {
+                new_hashes.insert(p.clone(), h);
+            }
+            new_files.insert(p.clone(), cached_facts);
+            continue;
+        }
         if let Ok(text) = project.read_file(p)
-            && text.len() <= 2 * 1024 * 1024
+            && text.len() <= MAX_SCAN_FILE_BYTES
         {
             let lang = detect_language_from_path(p);
+            new_hashes.insert(p.clone(), content_hash(&text));
             new_files.insert(p.clone(), parse_file(p, lang, &text));
         }
     }
 
+    if let Some(t) = &task
+        && t.is_cancelled()
+    {
+        return;
+    }
     let starters = detect_starters(project);
+    if let Some(t) = &task
+        && t.is_cancelled()
+    {
+        return;
+    }
     let custom_metadata = load_project_metadata(project);
 
     let model = cache.get_or_init(&root);
     model.files = new_files;
+    model.file_hashes = new_hashes;
     model.starters = starters;
     model.custom_metadata = custom_metadata;
-    let (edges, cycles) = compute_bean_graph(model, active_profile);
-    model.bean_edges = edges;
-    model.cycles = cycles;
+    model.scanned = true;
+    model.graph_dirty = true;
+    model.ensure_bean_graph(active_profile);
 
     if let Some(t) = &task {
         t.report(total, Some(total), Some("Spring index ready"));
@@ -383,14 +508,130 @@ pub fn bean_matches_type(bean: &BeanDef, target_type: &str) -> bool {
         || bean.name == target_type
 }
 
+pub struct BeanLookupIndex<'a> {
+    by_type: HashMap<&'a str, Vec<&'a BeanDef>>,
+    by_id: HashMap<&'a str, &'a BeanDef>,
+    has_beans: bool,
+}
+
+impl<'a> BeanLookupIndex<'a> {
+    pub fn build(model: &'a SpringProjectModel, active_profile: Option<&str>) -> Self {
+        let mut by_type: HashMap<&'a str, Vec<&'a BeanDef>> = HashMap::new();
+        let mut by_id: HashMap<&'a str, &'a BeanDef> = HashMap::new();
+        let mut has_beans = false;
+
+        fn push_unique<'b>(bucket: &mut Vec<&'b BeanDef>, bean: &'b BeanDef) {
+            if !bucket.iter().any(|existing| std::ptr::eq(*existing, bean)) {
+                bucket.push(bean);
+            }
+        }
+
+        for b in model.files.values().flat_map(|f| f.beans.iter()) {
+            has_beans = true;
+            if !bean_matches_profile(b, active_profile) {
+                continue;
+            }
+            by_id.insert(b.id.as_str(), b);
+            if !b.class_name.is_empty() {
+                push_unique(by_type.entry(b.class_name.as_str()).or_default(), b);
+            }
+            if !b.class_fqn.is_empty() {
+                push_unique(by_type.entry(b.class_fqn.as_str()).or_default(), b);
+            }
+            for iface in &b.interfaces {
+                if !iface.is_empty() {
+                    push_unique(by_type.entry(iface.as_str()).or_default(), b);
+                }
+            }
+            if let Some(sup) = b.superclass.as_deref()
+                && !sup.is_empty()
+            {
+                push_unique(by_type.entry(sup).or_default(), b);
+            }
+            if !b.name.is_empty() {
+                push_unique(by_type.entry(b.name.as_str()).or_default(), b);
+            }
+        }
+
+        Self {
+            by_type,
+            by_id,
+            has_beans,
+        }
+    }
+
+    pub fn has_beans(&self) -> bool {
+        self.has_beans
+    }
+
+    pub fn bean_by_id(&self, id: &str) -> Option<&'a BeanDef> {
+        self.by_id.get(id).copied()
+    }
+
+    pub fn resolve(&self, inj: &InjectionSite) -> (WiringStatus, Vec<ResolvedBeanTarget>) {
+        let mut candidates: Vec<&BeanDef> = self
+            .by_type
+            .get(inj.target_type.as_str())
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some((q, _)) = &inj.qualifier {
+            candidates.retain(|b| b.name == *q || b.qualifiers.iter().any(|(bq, _)| bq == q));
+        } else if candidates.len() > 1 {
+            let by_name: Vec<&BeanDef> = candidates
+                .iter()
+                .copied()
+                .filter(|b| b.name == inj.field_or_param_name)
+                .collect();
+            if by_name.len() == 1 {
+                candidates = by_name;
+            }
+        }
+
+        if candidates.is_empty() {
+            let status = if !inj.required || inj.is_collection_or_provider {
+                WiringStatus::OptionalMissing
+            } else {
+                WiringStatus::Missing
+            };
+            return (status, Vec::new());
+        }
+
+        let primaries: Vec<&BeanDef> = candidates.iter().copied().filter(|b| b.is_primary).collect();
+        if candidates.len() > 1 && primaries.len() == 1 {
+            candidates = primaries;
+        }
+
+        let targets: Vec<ResolvedBeanTarget> = candidates
+            .iter()
+            .map(|b| ResolvedBeanTarget {
+                bean_id: b.id.clone(),
+                bean_name: b.name.clone(),
+                class_name: b.class_name.clone(),
+                is_primary: b.is_primary,
+                file: b.file.clone(),
+                range: b.name_range,
+            })
+            .collect();
+
+        let status = if inj.is_collection_or_provider || targets.len() == 1 {
+            WiringStatus::Resolved
+        } else {
+            WiringStatus::Ambiguous
+        };
+        (status, targets)
+    }
+}
+
 pub fn resolve_injection(
     model: &SpringProjectModel,
     inj: &InjectionSite,
     active_profile: Option<&str>,
 ) -> (WiringStatus, Vec<ResolvedBeanTarget>) {
-    let beans = model.all_beans();
-    let mut candidates: Vec<&BeanDef> = beans
-        .into_iter()
+    let mut candidates: Vec<&BeanDef> = model
+        .files
+        .values()
+        .flat_map(|f| f.beans.iter())
         .filter(|b| bean_matches_profile(b, active_profile) && bean_matches_type(b, &inj.target_type))
         .collect();
 
@@ -444,22 +685,36 @@ pub fn resolve_injection(
     (status, targets)
 }
 
+impl SpringProjectModel {
+    pub fn ensure_bean_graph(&mut self, active_profile: Option<&str>) {
+        if !self.graph_dirty && self.graph_profile.as_deref() == active_profile {
+            return;
+        }
+        let (edges, cycles) = compute_bean_graph(self, active_profile);
+        self.bean_edges = edges;
+        self.cycles = cycles;
+        self.graph_dirty = false;
+        self.graph_profile = active_profile.map(str::to_owned);
+    }
+}
+
 pub fn compute_bean_graph(
     model: &SpringProjectModel,
     active_profile: Option<&str>,
 ) -> (Vec<BeanGraphEdge>, Vec<Vec<String>>) {
+    let bean_idx = BeanLookupIndex::build(model, active_profile);
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     let mut edges = Vec::new();
     let mut owner_map: HashMap<String, String> = HashMap::new();
 
-    for b in model.all_beans() {
+    for b in model.files.values().flat_map(|f| f.beans.iter()) {
         if bean_matches_profile(b, active_profile) {
             owner_map.entry(b.name.clone()).or_insert_with(|| b.id.clone());
             owner_map.entry(b.class_name.clone()).or_insert_with(|| b.id.clone());
         }
     }
 
-    for inj in model.all_injections() {
+    for inj in model.files.values().flat_map(|f| f.injections.iter()) {
         let from_id = owner_map
             .get(&inj.owner_bean)
             .or_else(|| owner_map.get(&inj.owner_class))
@@ -467,7 +722,7 @@ pub fn compute_bean_graph(
         let Some(from_id) = from_id else {
             continue;
         };
-        let (_, targets) = resolve_injection(model, inj, active_profile);
+        let (_, targets) = bean_idx.resolve(inj);
         for t in targets {
             if t.bean_id == from_id {
                 continue;
@@ -543,24 +798,23 @@ fn dfs_cycle(
 
 /// Builds `DocumentIndexer` edges for cross-file navigation, Find Usages & Rename, and Gutter Markers.
 /// Deliberately omits Java `@Value` <-> config edges already handled by OpenIDEA's built-in JDT configuration bridge.
-pub fn build_document_index_edges(doc: &IndexDoc, cache: &mut ProjectCache, active_profile: Option<&str>) -> Edges {
+pub fn build_document_index_edges(doc: &IndexDoc, root: &str, cache: &mut ProjectCache) -> Edges {
+    if !should_index_path(&doc.path) {
+        return Edges::default();
+    }
     let lang = detect_language_from_path(&doc.path);
-    let facts = parse_file(&doc.path, lang, &doc.text);
-
-    // Update cache synchronously on index call
-    let root = cache
+    let hash = content_hash(&doc.text);
+    let cached_hit = cache
         .projects
-        .keys()
-        .filter(|r| doc.path.starts_with(r.as_str()))
-        .max_by_key(|r| r.len())
-        .cloned()
-        .unwrap_or_else(|| {
-            doc.path
-                .rsplit_once('/')
-                .map(|(dir, _)| dir.to_owned())
-                .unwrap_or_else(|| "/".to_owned())
-        });
-    cache.update_file(&root, &doc.path, lang, &doc.text, active_profile);
+        .get(root)
+        .is_some_and(|m| m.file_hashes.get(&doc.path) == Some(&hash) && m.files.contains_key(&doc.path));
+    if !cached_hit {
+        let parsed = parse_file(&doc.path, lang, &doc.text);
+        cache.insert_file_facts(root, &doc.path, hash, parsed);
+    }
+    let Some(facts) = cache.projects.get(root).and_then(|m| m.files.get(&doc.path)) else {
+        return Edges::default();
+    };
 
     let mut edges = Edges::default();
 
@@ -730,5 +984,54 @@ mod tests {
         assert_eq!(st, WiringStatus::Resolved);
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].class_name, "JpaRepo"); // @Primary wins!
+    }
+
+    #[test]
+    fn bean_graph_scales_linearly_with_hundreds_of_beans_and_injections() {
+        let mut cache = ProjectCache::default();
+        let mut model = SpringProjectModel {
+            root: "/big".into(),
+            ..SpringProjectModel::default()
+        };
+        for i in 0..300usize {
+            let path = format!("/big/Svc{i}.java");
+            let next1 = (i + 1) % 300;
+            let next2 = (i + 2) % 300;
+            let next3 = (i + 3) % 300;
+            let src = format!(
+                "@Service\npublic class Svc{i} {{\n    @Autowired Svc{next1} a;\n    @Autowired Svc{next2} b;\n    @Autowired Svc{next3} c;\n}}\n"
+            );
+            let facts = parse_file(&path, "java", &src);
+            model.file_hashes.insert(path.clone(), content_hash(&src));
+            model.files.insert(path, facts);
+        }
+        cache.projects.insert("/big".into(), model);
+        let m = cache.projects.get_mut("/big").unwrap();
+        let (edges, cycles) = compute_bean_graph(m, None);
+        assert_eq!(edges.len(), 900);
+        assert!(!cycles.is_empty());
+    }
+
+    #[test]
+    fn large_file_guard_and_non_spring_prefilter() {
+        let huge = format!("@Service\npublic class Huge {{\n{}\n}}\n", "int x = 1;\n".repeat(120_000));
+        assert!(huge.len() > MAX_PARSE_BYTES);
+        let huge_facts = parse_file("/p/Huge.java", "java", &huge);
+        assert!(huge_facts.beans.is_empty());
+
+        let pojo = "package com.example;\npublic class UserDto {\n    private String name;\n    public String getName() { return name; }\n}\n";
+        let pojo_facts = parse_file("/p/UserDto.java", "java", pojo);
+        assert!(pojo_facts.beans.is_empty());
+        assert!(pojo_facts.injections.is_empty());
+        assert!(pojo_facts.endpoints.is_empty());
+
+        let spring_svc = "@Service\npublic class MySvc {}\n";
+        assert_eq!(parse_file("/p/MySvc.java", "java", spring_svc).beans.len(), 1);
+
+        let spring_repo = "public interface MyRepo extends JpaRepository<User, Long> {}\n";
+        assert_eq!(parse_file("/p/MyRepo.java", "java", spring_repo).repositories.len(), 1);
+
+        let webflux = "class R { RouterFunction<?> f() { return route().GET(\"/hi\", r -> null).build(); } }\n";
+        assert_eq!(parse_file("/p/R.java", "java", webflux).endpoints.len(), 1);
     }
 }

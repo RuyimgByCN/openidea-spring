@@ -66,6 +66,49 @@ struct MemberDecl {
     body_range_bytes: Option<(usize, usize)>,
 }
 
+fn may_contain_spring_constructs(text: &str) -> bool {
+    if text.as_bytes().contains(&b'@') {
+        const ANN_HINTS: &[&str] = &[
+            "SpringBootApplication",
+            "Component",
+            "Service",
+            "Repository",
+            "Controller",
+            "Configuration",
+            "Bean",
+            "Autowired",
+            "Inject",
+            "Resource",
+            "Qualifier",
+            "Value",
+            "Profile",
+            "Conditional",
+            "PropertySource",
+            "FeignClient",
+            "HttpExchange",
+            "Named",
+            "Entity",
+            "Query",
+            "EventListener",
+            "Scheduled",
+            "Transactional",
+            "Async",
+            "Authorize",
+            "Cache",
+            "Mapping",
+            "Exchange",
+        ];
+        if ANN_HINTS.iter().any(|k| text.contains(k)) {
+            return true;
+        }
+    }
+    text.contains("Repository")
+        || text.contains("publishEvent(")
+        || text.contains("RouterFunction")
+        || text.contains("router {")
+        || text.contains("coRouter {")
+}
+
 pub fn parse_jvm_source(path: &str, language: &str, text: &str) -> FileFacts {
     let is_kotlin = language == "kotlin" || path.ends_with(".kt") || path.ends_with(".kts");
     let mut facts = FileFacts {
@@ -74,6 +117,9 @@ pub fn parse_jvm_source(path: &str, language: &str, text: &str) -> FileFacts {
         is_kotlin,
         ..FileFacts::default()
     };
+    if !may_contain_spring_constructs(text) {
+        return facts;
+    }
     let idx = LineIndex::new(text);
     let pkg = extract_package(text);
     facts.package = pkg.clone();

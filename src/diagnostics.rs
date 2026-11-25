@@ -1,6 +1,6 @@
 use crate::boot_metadata::{MetadataIndex, validate_property_value};
 use crate::data_jpa::{parse_derived_query, validate_repository_method};
-use crate::index::{ProjectCache, resolve_injection};
+use crate::index::{BeanLookupIndex, ProjectCache};
 use crate::model::{EndpointKind, WiringStatus};
 use crate::parser_config::resolve_effective_properties;
 use crate::spel_cron::{parse_and_explain_cron, validate_spel};
@@ -19,7 +19,7 @@ pub fn compute_diagnostics(
     if !diagnostics_enabled {
         return Vec::new();
     }
-    let model = cache.model_for_doc(&doc.path, &doc.language, &doc.text, active_profile);
+    let model = cache.model_for_doc_with_graph(&doc.path, &doc.language, &doc.text, active_profile);
     let Some(facts) = model.files.get(&doc.path) else {
         return Vec::new();
     };
@@ -27,7 +27,12 @@ pub fn compute_diagnostics(
 
     // 1. Core DI checks
     let project_has_multiple_files = model.files.len() > 1;
-    let any_spring_beans = !model.all_beans().is_empty();
+    let bean_idx = if !facts.injections.is_empty() || !facts.beans.is_empty() {
+        Some(BeanLookupIndex::build(model, active_profile))
+    } else {
+        None
+    };
+    let any_spring_beans = bean_idx.as_ref().is_some_and(BeanLookupIndex::has_beans);
 
     for inj in &facts.injections {
         if warn_field_injection && inj.kind == crate::model::InjectionKind::Field {
@@ -44,8 +49,8 @@ pub fn compute_diagnostics(
             diags.push(d);
         }
 
-        if any_spring_beans {
-            let (status, targets) = resolve_injection(model, inj, active_profile);
+        if any_spring_beans && let Some(bidx) = &bean_idx {
+            let (status, targets) = bidx.resolve(inj);
             match status {
                 WiringStatus::Missing if project_has_multiple_files && !is_framework_type(&inj.target_type) => {
                     let mut d = Diagnostic::new(
@@ -106,10 +111,9 @@ pub fn compute_diagnostics(
             let readable: Vec<String> = cyc
                 .iter()
                 .map(|id| {
-                    model
-                        .all_beans()
-                        .into_iter()
-                        .find(|x| x.id == *id)
+                    bean_idx
+                        .as_ref()
+                        .and_then(|bidx| bidx.bean_by_id(id))
                         .map_or_else(|| id.clone(), |x| x.class_name.clone())
                 })
                 .collect();
@@ -163,10 +167,12 @@ pub fn compute_diagnostics(
 
     // 2. Web inspections
     let mut route_counts: HashMap<(String, String), usize> = HashMap::new();
-    for ep in model.all_endpoints() {
-        if ep.kind != EndpointKind::FeignClient {
-            for m in &ep.methods {
-                *route_counts.entry((m.clone(), ep.full_path.clone())).or_insert(0) += 1;
+    if facts.endpoints.iter().any(|e| e.kind != EndpointKind::FeignClient) {
+        for ep in model.all_endpoints() {
+            if ep.kind != EndpointKind::FeignClient {
+                for m in &ep.methods {
+                    *route_counts.entry((m.clone(), ep.full_path.clone())).or_insert(0) += 1;
+                }
             }
         }
     }

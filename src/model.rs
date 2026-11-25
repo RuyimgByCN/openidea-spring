@@ -1,6 +1,6 @@
 use openidea_plugin::{Location, Range};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -527,6 +527,10 @@ pub struct EffectiveProperty {
 pub struct SpringProjectModel {
     pub root: String,
     pub files: BTreeMap<String, FileFacts>,
+    pub file_hashes: HashMap<String, u64>,
+    pub scanned: bool,
+    pub graph_dirty: bool,
+    pub graph_profile: Option<String>,
     pub starters: ActiveStarters,
     pub custom_metadata: Vec<crate::boot_metadata::PropMeta>,
     pub bean_edges: Vec<BeanGraphEdge>,

@@ -1,7 +1,7 @@
 use crate::boot_metadata::MetadataIndex;
 use crate::data_jpa::parse_derived_query;
 use crate::endpoints::{join_context_path, resolve_base_url};
-use crate::index::{ProjectCache, resolve_injection};
+use crate::index::{BeanLookupIndex, ProjectCache, resolve_injection};
 use crate::model::{EndpointKind, SpringProjectModel, WiringStatus};
 use crate::parser_config::{config_entry_at, resolve_effective_properties};
 use crate::spel_cron::{parse_and_explain_cron, validate_spel};
@@ -273,10 +273,10 @@ pub fn inlay_hints(
     let Some(facts) = model.files.get(&doc.path) else {
         return Vec::new();
     };
-    let eff = resolve_effective_properties(&model.all_config_files(), active_profile);
     let mut hints = Vec::new();
 
-    if prefs.value_hints {
+    if prefs.value_hints && !facts.value_sites.is_empty() {
+        let eff = resolve_effective_properties(&model.all_config_files(), active_profile);
         for v in &facts.value_sites {
             if v.line < range.start.line || v.line > range.end.line {
                 continue;
@@ -300,21 +300,24 @@ pub fn inlay_hints(
         }
     }
 
-    if prefs.bean_hints && !model.all_beans().is_empty() {
-        for inj in &facts.injections {
-            if inj.line < range.start.line || inj.line > range.end.line {
-                continue;
-            }
-            let (status, targets) = resolve_injection(model, inj, active_profile);
-            if status == WiringStatus::Resolved && let Some(t) = targets.first()
-                && t.class_name != inj.target_type
-            {
-                hints.push(
-                    InlayHint::new(inj.range.end, format!("→ {}", t.class_name))
-                        .kind(InlayKind::Type)
-                        .tooltip(format!("Injected bean `{}` ({})", t.bean_name, t.class_name))
-                        .padding_left(),
-                );
+    if prefs.bean_hints && !facts.injections.is_empty() {
+        let bean_idx = BeanLookupIndex::build(model, active_profile);
+        if bean_idx.has_beans() {
+            for inj in &facts.injections {
+                if inj.line < range.start.line || inj.line > range.end.line {
+                    continue;
+                }
+                let (status, targets) = bean_idx.resolve(inj);
+                if status == WiringStatus::Resolved && let Some(t) = targets.first()
+                    && t.class_name != inj.target_type
+                {
+                    hints.push(
+                        InlayHint::new(inj.range.end, format!("→ {}", t.class_name))
+                            .kind(InlayKind::Type)
+                            .tooltip(format!("Injected bean `{}` ({})", t.bean_name, t.class_name))
+                            .padding_left(),
+                    );
+                }
             }
         }
     }
