@@ -621,26 +621,28 @@ pub fn code_actions(
             }
         }
 
-        // Convert YAML <-> Properties
+        // Convert YAML <-> Properties only when structure-preserving conversion succeeds cleanly.
         let line_idx = LineIndex::new(&doc.text);
         let full_range = line_idx.range_from_bytes(&doc.text, 0, doc.text.len());
         if doc.language == "yaml" || doc.path.ends_with(".yml") || doc.path.ends_with(".yaml") {
-            let converted = yaml_to_properties(&doc.text);
-            actions.push(CodeAction {
-                title: "Spring Boot: Convert YAML to .properties format".into(),
-                kind: Some("refactor".into()),
-                preferred: false,
-                edits: vec![(
-                    doc.path.clone(),
-                    vec![TextEdit {
-                        range: full_range,
-                        text: converted,
-                    }],
-                )],
-                data: None,
-            });
-        } else if doc.language == "properties" {
-            let converted = properties_to_yaml(&doc.text);
+            if let Ok(converted) = yaml_to_properties(&doc.text) {
+                actions.push(CodeAction {
+                    title: "Spring Boot: Convert YAML to .properties format".into(),
+                    kind: Some("refactor".into()),
+                    preferred: false,
+                    edits: vec![(
+                        doc.path.clone(),
+                        vec![TextEdit {
+                            range: full_range,
+                            text: converted,
+                        }],
+                    )],
+                    data: None,
+                });
+            }
+        } else if doc.language == "properties"
+            && let Ok(converted) = properties_to_yaml(&doc.text)
+        {
             actions.push(CodeAction {
                 title: "Spring Boot: Convert .properties to YAML format".into(),
                 kind: Some("refactor".into()),

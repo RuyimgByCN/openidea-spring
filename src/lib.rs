@@ -841,9 +841,21 @@ impl SpringPlugin {
         let lower_path = ed.path().to_ascii_lowercase();
         let is_props = lang == "properties" || lower_path.ends_with(".properties");
         let (converted, target_ext, target_lang) = if is_props {
-            (properties_to_yaml(&doc.text), "yml", "yaml")
+            match properties_to_yaml(&doc.text) {
+                Ok(out) => (out, "yml", "yaml"),
+                Err(msg) => {
+                    host::notify(NotificationLevel::Warning, "Spring Config", &msg);
+                    return Ok(None);
+                }
+            }
         } else {
-            (yaml_to_properties(&doc.text), "properties", "properties")
+            match yaml_to_properties(&doc.text) {
+                Ok(out) => (out, "properties", "properties"),
+                Err(msg) => {
+                    host::notify(NotificationLevel::Warning, "Spring Config", &msg);
+                    return Ok(None);
+                }
+            }
         };
 
         let ed_path = ed.path();
@@ -872,15 +884,29 @@ impl SpringPlugin {
         let ed = ctx
             .editor()
             .ok_or_else(|| Error::NotFound("No focused editor".into()))?;
+        let lang = ed.language();
+        let lower_path = ed.path().to_ascii_lowercase();
+        if lang != "java" && !lower_path.ends_with(".java") {
+            host::notify(
+                NotificationLevel::Info,
+                "Spring Refactor",
+                if zh {
+                    "仅支持在 Java 文件中将字段注入转换为构造器注入。"
+                } else {
+                    "Field-to-constructor conversion only supports Java files."
+                },
+            );
+            return Ok(None);
+        }
         let doc = ed.document()?;
         let Some(edits) = convert_field_injection_to_constructor(&doc.text) else {
             host::notify(
                 NotificationLevel::Info,
                 "Spring Refactor",
                 if zh {
-                    "当前文件未发现可转换为构造器注入的字段，或已存在构造方法。"
+                    "当前类包含已有构造函数或暂不支持安全转换的字段，已跳过修改。"
                 } else {
-                    "No convertible field injections found (or a constructor already exists)."
+                    "No safely convertible field injections found (existing constructors or unsupported field layouts are left unchanged)."
                 },
             );
             return Ok(None);
@@ -1145,9 +1171,9 @@ impl SpringPlugin {
                     let fmt = params.get("format").and_then(Value::as_str).unwrap_or("yaml");
                     let text = params.get("text").and_then(Value::as_str).unwrap_or("");
                     let converted = if fmt == "yaml" {
-                        yaml_to_properties(text)
+                        yaml_to_properties(text)?
                     } else {
-                        properties_to_yaml(text)
+                        properties_to_yaml(text)?
                     };
                     Ok(json!({ "converted": converted }))
                 }
@@ -2102,5 +2128,84 @@ public interface RemoteClient {
 
         let tabs = plugin.detail("spring-services", "unknown", &inv).unwrap();
         assert_eq!(tabs.len(), 1);
+    }
+
+    #[test]
+    fn refuses_unsafe_ctor_refactor_and_preserves_yaml_sequences_via_sdk_handlers() {
+        let mock = MockHost::install();
+        let mut plugin = SpringPlugin::default();
+        let inv = mock.invocation();
+
+        // 1. Existing constructor -> command returns None, editor text unchanged, CodeAction omitted
+        let example_java = concat!(
+            "package com.example;\n",
+            "import org.springframework.beans.factory.annotation.Autowired;\n",
+            "public class Example {\n",
+            "    @Autowired private Repo repo;\n",
+            "    public Example() { System.out.println(\"startup work\"); }\n",
+            "}\n",
+        );
+        mock.open_editor("/project/src/main/java/com/example/Example.java", "java", example_java, &[(3, 4, 3, 4)]);
+        let res = plugin.run_command("convert-field-to-constructor", &inv, None).unwrap();
+        assert_eq!(res, None);
+        assert_eq!(mock.editor_text(), example_java);
+
+        let java_actions = plugin.code_actions(
+            &ProviderDoc {
+                path: "/project/src/main/java/com/example/Example.java".into(),
+                version: 1,
+                language: "java".into(),
+                text: example_java.into(),
+            },
+            openidea_plugin::Range {
+                start: openidea_plugin::Position { line: 3, character: 4 },
+                end: openidea_plugin::Position { line: 3, character: 4 },
+            },
+        );
+        assert!(
+            !java_actions.iter().any(|a| a.title.contains("constructor injection")),
+            "must not offer field-to-constructor code action when class already defines a constructor"
+        );
+
+        // 2. YAML mapping sequences -> CodeAction emits indexed Spring keys (servers[0].host, servers[1].port)
+        let app_yml = "servers:\n  - host: api.example.test\n    port: 8080\n  - host: backup.example.test\n    port: 8081\n";
+        let yml_actions = plugin.code_actions(
+            &ProviderDoc {
+                path: "/project/src/main/resources/application.yml".into(),
+                version: 1,
+                language: "yaml".into(),
+                text: app_yml.into(),
+            },
+            openidea_plugin::Range {
+                start: openidea_plugin::Position { line: 0, character: 0 },
+                end: openidea_plugin::Position { line: 0, character: 0 },
+            },
+        );
+        let convert_action = yml_actions
+            .iter()
+            .find(|a| a.title == "Spring Boot: Convert YAML to .properties format")
+            .expect("expected YAML conversion code action");
+        let converted_text = &convert_action.edits[0].1[0].text;
+        assert_eq!(
+            converted_text,
+            "servers[0].host=api.example.test\nservers[0].port=8080\nservers[1].host=backup.example.test\nservers[1].port=8081\n"
+        );
+
+        // Invalid YAML -> conversion code action must not be offered
+        let invalid_yml_actions = plugin.code_actions(
+            &ProviderDoc {
+                path: "/project/src/main/resources/application.yml".into(),
+                version: 1,
+                language: "yaml".into(),
+                text: "servers: !bad [unclosed\n".into(),
+            },
+            openidea_plugin::Range {
+                start: openidea_plugin::Position { line: 0, character: 0 },
+                end: openidea_plugin::Position { line: 0, character: 0 },
+            },
+        );
+        assert!(!invalid_yml_actions
+            .iter()
+            .any(|a| a.title == "Spring Boot: Convert YAML to .properties format"));
     }
 }

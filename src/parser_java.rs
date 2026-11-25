@@ -2349,12 +2349,97 @@ fn parse_param_list(
     out
 }
 
+fn field_decl_has_unsafe_syntax(text: &str, decl_start: usize, decl_end: usize) -> bool {
+    let b = text.as_bytes();
+    let end = decl_end.min(b.len());
+    let mut i = decl_start.min(end);
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut angle = 0usize;
+
+    while i < end {
+        if let Some(next) = skip_string_or_comment(text, i) {
+            i = next.min(end);
+            continue;
+        }
+        let c = b[i];
+        if c == b'@' && paren == 0 && brace == 0 && bracket == 0 && angle == 0 {
+            if let Some(ann) = read_annotation(text, i) {
+                i = ann.end_byte.min(end);
+                continue;
+            }
+        }
+        match c {
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            b'<' => angle += 1,
+            b'>' => angle = angle.saturating_sub(1),
+            b'=' | b',' if paren == 0 && brace == 0 && bracket == 0 && angle == 0 => return true,
+            _ if paren == 0
+                && brace == 0
+                && bracket == 0
+                && angle == 0
+                && (c.is_ascii_alphabetic() || c == b'_') =>
+            {
+                let start = i;
+                while i < end && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+                    i += 1;
+                }
+                if &text[start..i] == "volatile" {
+                    return true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Refactoring: Convert all `@Autowired` field injections in a Java class to clean constructor injection.
 pub fn convert_field_injection_to_constructor(text: &str) -> Option<Vec<TextEdit>> {
     let idx = LineIndex::new(text);
     let classes = find_top_classes(text, false, &idx);
-    let cls = classes.first()?;
-    let members = parse_members(text, cls.body_start, cls.body_end, &cls.name, false, &idx);
+
+    let mut chosen = None;
+    for cls in &classes {
+        if cls.kind != "class" {
+            continue;
+        }
+        let members = parse_members(text, cls.body_start, cls.body_end, &cls.name, false, &idx);
+        let has_injected = members.iter().any(|m| {
+            m.is_field
+                && !m.is_static
+                && (has_ann(&m.annotations, "Autowired")
+                    || has_ann(&m.annotations, "Inject")
+                    || has_ann(&m.annotations, "Resource"))
+        });
+        if has_injected {
+            chosen = Some((cls, members));
+            break;
+        }
+    }
+    let (cls, members) = chosen?;
+
+    // Refuse when the class already declares any explicit constructor or Lombok constructor generator,
+    // because adding `final` fields and another constructor would leave existing constructors failing `javac`.
+    if members.iter().any(|m| m.is_ctor) {
+        return None;
+    }
+    if cls.annotations.iter().any(|a| {
+        matches!(
+            a.name.as_str(),
+            "NoArgsConstructor" | "AllArgsConstructor" | "RequiredArgsConstructor" | "Data" | "Value" | "Builder"
+        )
+    }) {
+        return None;
+    }
 
     let field_injections: Vec<&MemberDecl> = members
         .iter()
@@ -2368,6 +2453,25 @@ pub fn convert_field_injection_to_constructor(text: &str) -> Option<Vec<TextEdit
         .collect();
     if field_injections.is_empty() {
         return None;
+    }
+
+    // Validate every candidate field declaration before producing any edits.
+    for m in &field_injections {
+        if m.is_final
+            || m.return_or_field_type.is_empty()
+            || m.name.is_empty()
+            || !m.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+        {
+            return None;
+        }
+        if find_ann(&m.annotations, "Autowired")
+            .is_some_and(|a| a.raw_args.replace([' ', '\t', '\n', '\r'], "").contains("required=false"))
+        {
+            return None;
+        }
+        if field_decl_has_unsafe_syntax(text, m.decl_start, m.decl_end) {
+            return None;
+        }
     }
 
     let mut edits = Vec::new();
@@ -2400,14 +2504,12 @@ pub fn convert_field_injection_to_constructor(text: &str) -> Option<Vec<TextEdit
                 });
             }
         }
-        // Add `final` keyword if not already final
-        if !m.is_final {
-            let type_byte = idx.pos_to_byte(text, m.type_range.start);
-            edits.push(TextEdit {
-                range: idx.range_from_bytes(text, type_byte, type_byte),
-                text: "final ".to_owned(),
-            });
-        }
+        // Add `final` keyword
+        let type_byte = idx.pos_to_byte(text, m.type_range.start);
+        edits.push(TextEdit {
+            range: idx.range_from_bytes(text, type_byte, type_byte),
+            text: "final ".to_owned(),
+        });
         let qual_prefix = find_ann(&m.annotations, "Qualifier")
             .and_then(|q| extract_string_attr(q, &["value"]))
             .map(|q| format!("@Qualifier(\"{q}\") "))
@@ -2485,5 +2587,58 @@ public class OrderService {
         assert!(edits.iter().any(|e| e.text.is_empty()));
         assert!(edits.iter().any(|e| e.text == "final "));
         assert!(edits.iter().any(|e| e.text.contains("public UserService(UserRepo userRepo)")));
+    }
+
+    #[test]
+    fn refuses_field_to_constructor_when_existing_constructor_or_unsafe_field_present() {
+        let with_ctor = r#"
+@Service
+public class Example {
+    @Autowired
+    private Repo repo;
+
+    public Example() {
+        System.out.println("startup work");
+    }
+}
+"#;
+        assert!(convert_field_injection_to_constructor(with_ctor).is_none());
+
+        let with_lombok = r#"
+@Service
+@RequiredArgsConstructor
+public class LombokBean {
+    @Autowired
+    private Repo repo;
+}
+"#;
+        assert!(convert_field_injection_to_constructor(with_lombok).is_none());
+
+        let with_initializer = r#"
+@Service
+public class InitializedBean {
+    @Autowired
+    private Repo repo = null;
+}
+"#;
+        assert!(convert_field_injection_to_constructor(with_initializer).is_none());
+
+        let with_multi_decl = r#"
+@Service
+public class MultiBean {
+    @Autowired
+    private Repo a, b;
+}
+"#;
+        assert!(convert_field_injection_to_constructor(with_multi_decl).is_none());
+
+        let with_optional_autowired = r#"
+@Service
+public class OptionalBean {
+    @Autowired(required = false)
+    private Repo repo;
+}
+"#;
+        assert!(convert_field_injection_to_constructor(with_optional_autowired).is_none());
     }
 }
