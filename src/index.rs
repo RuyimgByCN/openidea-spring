@@ -63,12 +63,25 @@ impl ProjectCache {
         self.insert_file_facts(root, path, hash, facts);
     }
 
-    pub fn remove_file_lazy(&mut self, root: &str, path: &str) {
+    pub fn invalidate_file_path(&mut self, root: &str, path: &str) {
         if let Some(model) = self.projects.get_mut(root) {
             model.files.remove(path);
             model.file_hashes.remove(path);
+            let clean_root = root.trim_end_matches('/');
+            if let Some(rel) = path.strip_prefix(clean_root).and_then(|s| s.strip_prefix('/')) {
+                model.files.remove(rel);
+                model.file_hashes.remove(rel);
+            } else if !clean_root.is_empty() && !path.starts_with('/') {
+                let abs = format!("{clean_root}/{path}");
+                model.files.remove(&abs);
+                model.file_hashes.remove(&abs);
+            }
             model.graph_dirty = true;
         }
+    }
+
+    pub fn remove_file_lazy(&mut self, root: &str, path: &str) {
+        self.invalidate_file_path(root, path);
     }
 
     pub fn update_file(&mut self, root: &str, path: &str, language: &str, text: &str, active_profile: Option<&str>) {

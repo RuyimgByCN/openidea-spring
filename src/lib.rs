@@ -1425,6 +1425,14 @@ impl Plugin for SpringPlugin {
                         && let Ok(root) = project.root()
                     {
                         if batch.created.len() + batch.modified.len() > 200 {
+                            for path in batch
+                                .created
+                                .iter()
+                                .chain(&batch.modified)
+                                .chain(&batch.removed)
+                            {
+                                self.cache.invalidate_file_path(&root, path);
+                            }
                             if let Some(model) = self.cache.projects.get_mut(&root) {
                                 model.scanned = false;
                                 model.graph_dirty = true;
@@ -2288,5 +2296,96 @@ public interface RemoteClient {
         let model = plugin.cache.projects.get("/project").expect("project entry");
         assert!(!model.scanned, "DocumentIndexer::index must not run scan_project");
         assert_eq!(model.files.len(), 1);
+    }
+
+    #[test]
+    fn large_files_changed_batch_invalidates_cache_before_deferred_scan() {
+        let mock = MockHost::install();
+        let mut paths = Vec::with_capacity(201);
+        for i in 0..201usize {
+            let path = format!("/project/src/main/java/com/example/Svc{i:03}.java");
+            let src = format!(
+                "package com.example;\nimport org.springframework.stereotype.Service;\n@Service\npublic class OldSvc{i:03} {{}}\n"
+            );
+            mock.add_file(&path, &src);
+            paths.push(path);
+        }
+
+        let mut plugin = SpringPlugin::default();
+        let inv = mock.invocation();
+
+        // Initial panel open scans all 201 files
+        plugin
+            .handle("spring", ViewEvent::Message(r#"{"op":"ready"}"#.into()), &inv)
+            .unwrap();
+        let init1_raw = mock
+            .view_messages()
+            .into_iter()
+            .rev()
+            .find(|(v, m)| v == "spring" && m.contains(r#""op":"init""#))
+            .map(|(_, m)| m)
+            .expect("initial init view message");
+        let init1: Value = serde_json::from_str(&init1_raw).unwrap();
+        let beans1 = init1["snapshot"]["beans"].as_array().unwrap();
+        assert_eq!(beans1.len(), 201);
+        assert!(beans1.iter().any(|b| b["className"] == "OldSvc000"));
+        assert!(beans1.iter().any(|b| b["className"] == "OldSvc200"));
+        assert!(!beans1.iter().any(|b| b["className"].as_str().unwrap_or("").starts_with("NewSvc")));
+
+        // Seed an extra cached entry (not on disk) to verify `removed` invalidation too
+        let removed_path = "/project/src/main/java/com/example/RemovedSvc.java".to_owned();
+        plugin.cache.update_file_lazy(
+            "/project",
+            &removed_path,
+            "java",
+            "package com.example;\n@Service\npublic class RemovedSvc {}\n",
+        );
+
+        // Replace all 201 files on disk and deliver one >200-file FilesChanged batch
+        for (i, path) in paths.iter().enumerate() {
+            let new_src = format!(
+                "package com.example;\nimport org.springframework.stereotype.Service;\n@Service\npublic class NewSvc{i:03} {{}}\n"
+            );
+            mock.add_file(path, &new_src);
+        }
+        plugin.handle_events(
+            &[Event::FilesChanged(openidea_plugin::FilesChanged {
+                created: Vec::new(),
+                modified: paths.clone(),
+                removed: vec![removed_path.clone()],
+            })],
+            &inv,
+        );
+
+        {
+            let model = plugin.cache.projects.get("/project").unwrap();
+            assert!(!model.scanned);
+            assert!(!model.files.contains_key(&removed_path));
+            assert!(!model.file_hashes.contains_key(&removed_path));
+            for path in &paths {
+                assert!(!model.files.contains_key(path));
+                assert!(!model.file_hashes.contains_key(path));
+            }
+        }
+
+        // Reopening the Spring panel triggers deferred scan and reflects all 201 updated beans
+        plugin
+            .handle("spring", ViewEvent::Message(r#"{"op":"ready"}"#.into()), &inv)
+            .unwrap();
+        let init2_raw = mock
+            .view_messages()
+            .into_iter()
+            .rev()
+            .find(|(v, m)| v == "spring" && m.contains(r#""op":"init""#))
+            .map(|(_, m)| m)
+            .expect("reopened init view message");
+        let init2: Value = serde_json::from_str(&init2_raw).unwrap();
+        let beans2 = init2["snapshot"]["beans"].as_array().unwrap();
+        assert_eq!(beans2.len(), 201);
+        assert!(beans2.iter().any(|b| b["className"] == "NewSvc000"));
+        assert!(beans2.iter().any(|b| b["className"] == "NewSvc200"));
+        assert!(!beans2.iter().any(|b| b["className"].as_str().unwrap_or("").starts_with("OldSvc")));
+        assert!(!beans2.iter().any(|b| b["className"] == "RemovedSvc"));
+        assert!(plugin.cache.projects.get("/project").unwrap().scanned);
     }
 }
