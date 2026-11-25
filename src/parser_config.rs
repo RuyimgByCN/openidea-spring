@@ -146,7 +146,15 @@ fn parse_properties_file(path: &str, text: &str, profile: Option<String>, idx: &
     while line_idx < lines.len() {
         let start_line = line_idx;
         let line_start_byte = idx.line_start_byte(start_line as u32);
-        let raw_line = lines[line_idx].trim_end_matches('\r');
+        let raw_line_orig = lines[line_idx].trim_end_matches('\r');
+        let (raw_line, bom_bytes) = if line_idx == 0 {
+            match raw_line_orig.strip_prefix('\u{feff}') {
+                Some(stripped) => (stripped, '\u{feff}'.len_utf8()),
+                None => (raw_line_orig, 0),
+            }
+        } else {
+            (raw_line_orig, 0)
+        };
         let trimmed = raw_line.trim_start();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
             if trimmed == "#---" {
@@ -178,7 +186,7 @@ fn parse_properties_file(path: &str, text: &str, profile: Option<String>, idx: &
             let raw_val = combined[sep_pos + 1..].trim_start_matches([' ', '\t', '\x0c']).to_owned();
             let value = unescape_properties_token(&raw_val).unwrap_or_else(|_| unquote_value(&raw_val));
 
-            let key_abs_start = line_start_byte + lead_ws;
+            let key_abs_start = line_start_byte + bom_bytes + lead_ws;
             let key_abs_end = (key_abs_start + key.len()).min(text.len());
             let key_range = idx.range_from_bytes(text, key_abs_start, key_abs_end);
 
@@ -186,7 +194,7 @@ fn parse_properties_file(path: &str, text: &str, profile: Option<String>, idx: &
                 .find(&raw_val)
                 .filter(|p| *p >= lead_ws + key.len())
                 .unwrap_or_else(|| raw_line.len().saturating_sub(raw_val.len()));
-            let val_abs_start = line_start_byte + val_rel;
+            let val_abs_start = line_start_byte + bom_bytes + val_rel;
             let val_abs_end = (val_abs_start + raw_val.len()).min(text.len());
             let value_range = idx.range_from_bytes(text, val_abs_start, val_abs_end);
             let placeholders = extract_placeholders(&value, text, value_range, idx);
@@ -259,7 +267,15 @@ fn parse_yaml_file(path: &str, text: &str, profile: Option<String>, idx: &LineIn
     let mut current_doc_profile: Option<String> = None;
 
     for (line_num, raw_line_cr) in text.split('\n').enumerate() {
-        let raw_line = raw_line_cr.trim_end_matches('\r');
+        let raw_line_orig = raw_line_cr.trim_end_matches('\r');
+        let (raw_line, bom_bytes) = if line_num == 0 {
+            match raw_line_orig.strip_prefix('\u{feff}') {
+                Some(stripped) => (stripped, '\u{feff}'.len_utf8()),
+                None => (raw_line_orig, 0),
+            }
+        } else {
+            (raw_line_orig, 0)
+        };
         let line_start_byte = idx.line_start_byte(line_num as u32);
         let stripped_comment = strip_yaml_comment(raw_line);
         let trimmed = stripped_comment.trim();
@@ -324,8 +340,8 @@ fn parse_yaml_file(path: &str, text: &str, profile: Option<String>, idx: &LineIn
         if key_segment.is_empty() {
             continue;
         }
-        let key_abs_start = line_start_byte + indent;
-        let key_abs_end = line_start_byte + colon_pos;
+        let key_abs_start = line_start_byte + bom_bytes + indent;
+        let key_abs_end = line_start_byte + bom_bytes + colon_pos;
         let key_range = idx.range_from_bytes(text, key_abs_start, key_abs_end);
 
         stack.push((indent, key_segment.clone()));
@@ -334,7 +350,7 @@ fn parse_yaml_file(path: &str, text: &str, profile: Option<String>, idx: &LineIn
         let val_trimmed = rest_after_colon.trim();
 
         let lead_in_rest = rest_after_colon.len() - rest_after_colon.trim_start().len();
-        let val_abs_start = line_start_byte + colon_pos + 1 + lead_in_rest;
+        let val_abs_start = line_start_byte + bom_bytes + colon_pos + 1 + lead_in_rest;
         let val_abs_end = val_abs_start + val_trimmed.len();
         let value_range = idx.range_from_bytes(text, val_abs_start, val_abs_end);
 
@@ -848,7 +864,11 @@ fn emit_yaml_node(node: &PropNode, indent: usize, out: &mut String) -> Result<()
 }
 
 fn parse_properties_documents(text: &str) -> Result<Vec<Vec<(String, String)>>, String> {
-    let norm = text.replace("\r\n", "\n").replace('\r', "\n");
+    let norm = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let lines: Vec<&str> = norm.split('\n').collect();
     let mut docs: Vec<Vec<(String, String)>> = vec![Vec::new()];
     let mut i = 0usize;
@@ -1016,6 +1036,7 @@ fn flatten_yaml_value(prefix: &str, val: &YamlValue, rows: &mut Vec<(String, Str
 
 /// Converts a Spring Boot YAML file into structure-preserving, `java.util.Properties`-escaped `.properties` lines.
 pub fn yaml_to_properties(text: &str) -> Result<String, String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut rendered_docs = Vec::new();
     for doc_de in serde_yaml_ng::Deserializer::from_str(text) {
         let mut doc = YamlValue::deserialize(doc_de).map_err(|e| format!("Invalid YAML: {e}"))?;
@@ -1137,5 +1158,35 @@ server:
         // Path conflicts & sparse indices in .properties return Err
         assert!(properties_to_yaml("foo=bar\nfoo.baz=qux\n").is_err());
         assert!(properties_to_yaml("servers[0].host=a\nservers[2].host=b\n").is_err());
+    }
+
+    #[test]
+    fn parses_and_converts_bom_prefixed_properties_and_yaml() {
+        let bom_props = "\u{feff}server.port=8080\nspring.application.name=demo\n";
+        let cf_props = parse_config_file("/p/application.properties", bom_props);
+        assert_eq!(cf_props.entries.len(), 2);
+        assert_eq!(cf_props.entries[0].key, "server.port");
+        assert_eq!(cf_props.entries[0].value, "8080");
+        assert_eq!(cf_props.entries[0].key_range.start.character, 1);
+
+        let yaml_from_bom = properties_to_yaml(bom_props).unwrap();
+        assert!(yaml_from_bom.starts_with("server:\n  port: 8080\n"));
+
+        let bom_yaml = "\u{feff}server:\n  port: 8080\n";
+        let cf_yaml = parse_config_file("/p/application.yml", bom_yaml);
+        assert_eq!(cf_yaml.entries.len(), 1);
+        assert_eq!(cf_yaml.entries[0].key, "server.port");
+        assert_eq!(cf_yaml.entries[0].value, "8080");
+        assert_eq!(cf_yaml.entries[0].key_range.start.line, 1);
+        assert_eq!(cf_yaml.entries[0].key_range.start.character, 2);
+
+        let flat_bom_yaml = "\u{feff}app.name: demo\n";
+        let cf_flat = parse_config_file("/p/application.yml", flat_bom_yaml);
+        assert_eq!(cf_flat.entries[0].key, "app.name");
+        assert_eq!(cf_flat.entries[0].key_range.start.line, 0);
+        assert_eq!(cf_flat.entries[0].key_range.start.character, 1);
+
+        let props_from_bom = yaml_to_properties(bom_yaml).unwrap();
+        assert_eq!(props_from_bom, "server.port=8080\n");
     }
 }

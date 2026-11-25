@@ -302,7 +302,7 @@ fn split_combinators(s: &str) -> Vec<(Option<&'static str>, &str)> {
     let mut i = 0usize;
     while i < bytes.len() {
         if i > start
-            && s[i..].starts_with("And")
+            && bytes[i..].starts_with(b"And")
             && bytes.get(i + 3).is_some_and(|b| b.is_ascii_uppercase())
         {
             out.push((next_comb, &s[start..i]));
@@ -312,7 +312,7 @@ fn split_combinators(s: &str) -> Vec<(Option<&'static str>, &str)> {
             continue;
         }
         if i > start
-            && s[i..].starts_with("Or")
+            && bytes[i..].starts_with(b"Or")
             && bytes.get(i + 2).is_some_and(|b| b.is_ascii_uppercase())
         {
             out.push((next_comb, &s[start..i]));
@@ -614,5 +614,14 @@ mod tests {
         let errs = validate_repository_method(&repo, &repo.methods[0], &[&user]);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("missingField"));
+    }
+
+    #[test]
+    fn handles_non_ascii_derived_query_without_panicking() {
+        let ast = parse_derived_query("findBy名称AndStatus").expect("derived query");
+        assert_eq!(ast.predicates.len(), 2);
+        assert_eq!(ast.predicates[0].field_path, vec!["名称"]);
+        assert_eq!(ast.predicates[1].combinator, Some("AND"));
+        assert_eq!(ast.predicates[1].field_path, vec!["status"]);
     }
 }

@@ -1230,6 +1230,7 @@ fn detect_repository_super(extends: &[String], implements: &[String]) -> Option<
         if REPO_BASES.contains(&base.as_str())
             && let Some(start_gen) = sup.find('<')
             && let Some(end_gen) = sup.rfind('>')
+            && start_gen + 1 <= end_gen
         {
             let inner = &sup[start_gen + 1..end_gen];
             if let Some((e, id)) = inner.split_once(',') {
@@ -1556,15 +1557,15 @@ fn skip_string_or_comment(text: &str, i: usize) -> Option<usize> {
     if i >= b.len() {
         return None;
     }
-    if text[i..].starts_with("//") {
+    if b[i..].starts_with(b"//") {
         let end = text[i..].find('\n').map_or(b.len(), |p| i + p + 1);
         return Some(end);
     }
-    if text[i..].starts_with("/*") {
+    if b[i..].starts_with(b"/*") {
         let end = text[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2);
         return Some(end);
     }
-    if text[i..].starts_with("\"\"\"") {
+    if b[i..].starts_with(b"\"\"\"") {
         let end = text[i + 3..].find("\"\"\"").map_or(b.len(), |p| i + 3 + p + 3);
         return Some(end);
     }
@@ -1944,8 +1945,9 @@ fn parse_members(
                 let mut cur = skip_ws_and_comments(text, close_p + 1);
                 // Optional Kotlin return type `: ReturnType`
                 let mut kt_ret = String::new();
-                if is_kotlin && b.get(cur) == Some(&b':') {
+                if is_kotlin && cur < body_end && b.get(cur) == Some(&b':') {
                     let ret_start = cur + 1;
+                    cur = ret_start;
                     while cur < body_end && !matches!(b[cur], b'{' | b'=' | b'\n') {
                         cur += 1;
                     }
@@ -2281,6 +2283,9 @@ fn parse_param_list(
                 continue;
             }
             break;
+        }
+        if cur >= abs_end {
+            continue;
         }
         let rest = text[cur..abs_end].trim();
         if is_kotlin {
@@ -2640,5 +2645,23 @@ public class OptionalBean {
 }
 "#;
         assert!(convert_field_injection_to_constructor(with_optional_autowired).is_none());
+    }
+
+    #[test]
+    fn parses_java_and_kotlin_with_utf8_bom_and_non_ascii_chars() {
+        let java = "\u{feff}package com.example;\n// 中文注释\n@Service\npublic class OrderService {\n    @Autowired\n    private OrderRepo orderRepo;\n    /* 多行注释 */\n    public void run() {}\n}\n";
+        let java_facts = parse_jvm_source("/p/OrderService.java", "java", java);
+        assert_eq!(java_facts.beans.len(), 1);
+        assert_eq!(java_facts.injections.len(), 1);
+        assert_eq!(java_facts.injections[0].target_type, "OrderRepo");
+
+        let kotlin = "\u{feff}package com.example\n@Service\nclass UserService(\n    private val userRepo: UserRepo\n) {\n    // 中文\n    fun query(): String = \"结果\"\n}\n";
+        let kt_facts = parse_jvm_source("/p/UserService.kt", "kotlin", kotlin);
+        assert_eq!(kt_facts.beans.len(), 1);
+        assert_eq!(kt_facts.injections.len(), 1);
+        assert_eq!(kt_facts.injections[0].target_type, "UserRepo");
+
+        // Ensure non-ASCII identifiers also never panic
+        let _ = parse_jvm_source("/p/Unicode.java", "java", "\u{feff}class 订单服务 { int 数量 = 1; }");
     }
 }

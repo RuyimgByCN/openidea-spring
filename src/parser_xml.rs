@@ -20,7 +20,7 @@ pub fn parse_spring_xml(path: &str, text: &str) -> FileFacts {
     let mut current_bean_class = String::new();
 
     while i < bytes.len() {
-        if text[i..].starts_with("<!--") {
+        if bytes[i..].starts_with(b"<!--") {
             if let Some(end) = text[i + 4..].find("-->") {
                 i += 4 + end + 3;
                 continue;
@@ -408,5 +408,36 @@ mod tests {
         assert_eq!(facts.value_sites[0].prop_key.as_deref(), Some("db.url"));
         assert_eq!(facts.link_targets.len(), 1);
         assert_eq!(facts.link_targets[0].raw_target, "classpath:extra-beans.xml");
+    }
+
+    #[test]
+    fn parses_spring_xml_with_utf8_bom_and_non_ascii_text() {
+        let xml = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<beans xmlns=\"http://www.springframework.org/schema/beans\"
+\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:p=\"http://www.springframework.org/schema/p\"
+\txmlns:tx=\"http://www.springframework.org/schema/tx\">
+  <!-- 数据库配置 -->
+  说明文本
+  <bean id=\"dataSource\" class=\"com.zaxxer.hikari.HikariDataSource\">
+    <property name=\"jdbcUrl\" value=\"${db.url:jdbc:h2:mem:test}\" />
+    <prop key=\"app.title\">中文标题</prop>
+  </bean>
+  <bean id=\"userRepo\" class=\"com.example.JdbcUserRepo\">
+    <constructor-arg ref=\"dataSource\" />
+  </bean>
+</beans>
+";
+        let facts = parse_spring_xml("/p/src/main/resources/applicationContext.xml", xml);
+        assert_eq!(facts.beans.len(), 2);
+        assert_eq!(facts.beans[0].name, "dataSource");
+        assert_eq!(facts.injections.len(), 1);
+        assert_eq!(facts.injections[0].target_type, "dataSource");
+        assert_eq!(facts.value_sites.len(), 1);
+        assert_eq!(facts.value_sites[0].prop_key.as_deref(), Some("db.url"));
+        let cf = facts.config_file.expect("prop config entries");
+        assert_eq!(cf.entries.len(), 2);
+        assert_eq!(cf.entries[0].key, "jdbcUrl");
+        assert_eq!(cf.entries[1].key, "app.title");
+        assert_eq!(cf.entries[1].value, "中文标题");
     }
 }
